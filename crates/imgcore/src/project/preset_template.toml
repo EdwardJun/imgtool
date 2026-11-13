@@ -1,0 +1,28 @@
+# imgtool 项目预设：桌面端与 MCP（Agent）共用
+# 放在项目根目录，文件名 .imgtool.toml
+
+[defaults]
+# 默认输出格式：jpeg / png / webp / avif，不填则保持原格式
+# format = "webp"
+quality = 80
+# 单张体积上限（KB），设置后默认按目标体积压缩
+# max_kb = 300
+# 等比缩放到不超过该宽高（不会放大）
+# max_width = 1920
+# max_height = 1920
+
+[output]
+# suffix：同目录新文件（photo.min.jpg / photo.webp）
+# overwrite：原地覆盖
+# dir：写到 dir 指定的目录，保持相对结构
+mode = "suffix"
+suffix = ".min"
+dir = ".imgtool/out"
+# 目标文件已存在时：error / overwrite / rename
+on_conflict = "error"
+
+[scan]
+# 额外排除的 glob（.gitignore 自动生效）
+exclude = ["**/node_modules/**", "**/dist/**", "**/.imgtool/**"]
+warn_kb = 500
+warn_dimension = 2560

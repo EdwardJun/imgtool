@@ -1,0 +1,9 @@
+/target
+node_modules/
+apps/desktop/dist/
+*.tsbuildinfo
+apps/desktop/src-tauri/gen/
+# 由 scripts/build-sidecar.mjs 生成
+apps/desktop/src-tauri/binaries/
+.imgtool/
+.DS_Store

@@ -1,0 +1,30 @@
+[package]
+name = "imgcore"
+description = "图片处理核心：解码、裁剪、缩放、编码、目标体积搜索、项目预设与扫描"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# 为参数类型派生 JSON Schema（MCP 工具参数会用到）
+schema = ["dep:schemars"]
+
+[dependencies]
+color_quant = "2.0.0"
+globset = "0.4.21"
+ignore = "0.4.34"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff", "ico", "rayon"] }
+# 默认特性在 x86 上需要 nasm 才会启用 SIMD，缺少 nasm 时自动降级为纯 C 实现
+mozjpeg = "0.10.13"
+oxipng = { version = "10.2.1", default-features = false, features = ["parallel", "zopfli"] }
+png = "0.18.1"
+ravif = "0.13.0"
+schemars = { version = "1", optional = true }
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+toml = "1.2.1"
+webp = { version = "0.3.1", default-features = false }
+
+[dev-dependencies]
+tempfile = "3.27.0"
