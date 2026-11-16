@@ -13,6 +13,7 @@ pub struct Overrides {
     pub fit: Option<ResizeFit>,
     pub format: Option<OutputFormat>,
     pub crop: Option<CropSpec>,
+    pub remove_background: Option<imgcore::BackgroundRemoval>,
     pub output_mode: Option<OutputMode>,
     pub out_dir: Option<String>,
     pub on_conflict: Option<ConflictPolicy>,
@@ -58,6 +59,9 @@ pub fn resolve(preset: &ProjectPreset, o: &Overrides) -> Result<Resolved, String
     if o.crop.is_some() {
         options.crop = o.crop.clone();
     }
+    if o.remove_background.is_some() {
+        options.remove_background = o.remove_background.clone();
+    }
 
     let mut policy = preset.output.clone();
     if let Some(m) = o.output_mode {
@@ -84,6 +88,20 @@ pub fn parse_aspect(s: &str) -> Result<CropSpec, String> {
         return Err("宽高比必须大于 0".into());
     }
     Ok(CropSpec::Aspect { width: w, height: h })
+}
+
+/// 解析 "#ffffff" / "ffffff" / "255,255,255"
+pub fn parse_color(s: &str) -> Result<[u8; 3], String> {
+    let t = s.trim().trim_start_matches('#');
+    if t.len() == 6 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+        let v = |i: usize| u8::from_str_radix(&t[i..i + 2], 16).unwrap_or(0);
+        return Ok([v(0), v(2), v(4)]);
+    }
+    let parts: Vec<u8> = t.split(',').map(|p| p.trim().parse::<u8>()).collect::<Result<_, _>>().map_err(|_| format!("无效颜色 {s}，示例 #ffffff 或 255,255,255"))?;
+    match parts[..] {
+        [r, g, b] => Ok([r, g, b]),
+        _ => Err(format!("无效颜色 {s}，示例 #ffffff 或 255,255,255")),
+    }
 }
 
 /// 解析 "x,y,w,h"
@@ -125,5 +143,8 @@ mod tests {
         assert_eq!(parse_aspect("16:9").unwrap(), CropSpec::Aspect { width: 16, height: 9 });
         assert_eq!(parse_rect("1,2,3,4").unwrap(), CropSpec::Rect { x: 1, y: 2, width: 3, height: 4 });
         assert!(parse_rect("1,2,3").is_err());
+        assert_eq!(parse_color("#FFfe00").unwrap(), [255, 254, 0]);
+        assert_eq!(parse_color("1, 2,3").unwrap(), [1, 2, 3]);
+        assert!(parse_color("#fff").is_err());
     }
 }

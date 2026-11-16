@@ -7,11 +7,16 @@ use crate::project::preset::{ConflictPolicy, OutputMode, OutputPolicy};
 use crate::types::OutputFormat;
 
 /// 根据输出策略计算目标路径（不处理冲突）
+///
+/// dir 模式下：输出目录相对 `project_root`；子目录结构相对 `relative_base`
+/// （传入的是目录时为该目录，单个文件时为文件所在目录 → 直接平铺到输出目录）。
+/// `relative_base` 为空时退回按 `project_root` 保留结构。
 pub fn plan_output_path(
     input: &Path,
     format: OutputFormat,
     policy: &OutputPolicy,
     project_root: Option<&Path>,
+    relative_base: Option<&Path>,
 ) -> Result<PathBuf> {
     let parent = input.parent().unwrap_or_else(|| Path::new("."));
     let stem = input
@@ -37,8 +42,9 @@ pub fn plan_output_path(
                 Some(root) => root.join(&policy.dir),
                 None => parent.join(&policy.dir),
             };
-            let rel_parent = project_root
-                .and_then(|root| parent.strip_prefix(root).ok())
+            let rel_parent = relative_base
+                .or(project_root)
+                .and_then(|base| parent.strip_prefix(base).ok())
                 .unwrap_or_else(|| Path::new(""));
             out_dir.join(rel_parent).join(format!("{stem}.{ext}"))
         }
@@ -113,11 +119,11 @@ mod tests {
     fn suffix_naming() {
         let p = Path::new("/p/assets/photo.JPG");
         assert_eq!(
-            plan_output_path(p, OutputFormat::Jpeg, &policy(OutputMode::Suffix), None).unwrap(),
+            plan_output_path(p, OutputFormat::Jpeg, &policy(OutputMode::Suffix), None, None).unwrap(),
             PathBuf::from("/p/assets/photo.min.JPG")
         );
         assert_eq!(
-            plan_output_path(p, OutputFormat::Webp, &policy(OutputMode::Suffix), None).unwrap(),
+            plan_output_path(p, OutputFormat::Webp, &policy(OutputMode::Suffix), None, None).unwrap(),
             PathBuf::from("/p/assets/photo.webp")
         );
     }
@@ -125,9 +131,21 @@ mod tests {
     #[test]
     fn dir_mode_keeps_structure() {
         let p = Path::new("/p/src/img/a.png");
+        let root = Some(Path::new("/p"));
+        // 未指定 relative_base：按项目根目录保留结构
         assert_eq!(
-            plan_output_path(p, OutputFormat::Png, &policy(OutputMode::Dir), Some(Path::new("/p"))).unwrap(),
+            plan_output_path(p, OutputFormat::Png, &policy(OutputMode::Dir), root, None).unwrap(),
             PathBuf::from("/p/.imgtool/out/src/img/a.png")
+        );
+        // 处理目录 /p/src：只保留相对该目录的结构
+        assert_eq!(
+            plan_output_path(p, OutputFormat::Png, &policy(OutputMode::Dir), root, Some(Path::new("/p/src"))).unwrap(),
+            PathBuf::from("/p/.imgtool/out/img/a.png")
+        );
+        // 单个文件：直接平铺到输出目录
+        assert_eq!(
+            plan_output_path(p, OutputFormat::Webp, &policy(OutputMode::Dir), root, Some(Path::new("/p/src/img"))).unwrap(),
+            PathBuf::from("/p/.imgtool/out/a.webp")
         );
     }
 

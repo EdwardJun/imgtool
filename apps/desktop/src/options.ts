@@ -1,4 +1,65 @@
-import type { AspectPreset, ImageItem, ProcessOptions, Rect, ResizeSpec, Settings, Tool } from './types';
+import type {
+  AspectPreset,
+  BackgroundRemoval,
+  DetectOptions,
+  ImageItem,
+  ProcessOptions,
+  Rect,
+  RemoveBgSettings,
+  ResizeSpec,
+  Settings,
+  SmartCropSettings,
+  Tool,
+} from './types';
+
+export const defaultRemoveBg: RemoveBgSettings = {
+  auto: true,
+  color: '#ffffff',
+  tolerance: 12,
+  softness: 8,
+  contiguous: true,
+  decontaminate: true,
+  trim: false,
+  trimPadding: 0,
+  format: 'png',
+};
+
+const REMOVE_BG_KEY = 'imgtool.removeBg';
+
+export function loadRemoveBg(): RemoveBgSettings {
+  try {
+    return { ...defaultRemoveBg, ...JSON.parse(localStorage.getItem(REMOVE_BG_KEY) ?? '{}') };
+  } catch {
+    return defaultRemoveBg;
+  }
+}
+
+export function saveRemoveBg(s: RemoveBgSettings) {
+  localStorage.setItem(REMOVE_BG_KEY, JSON.stringify(s));
+}
+
+export function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace('#', '');
+  const v = (i: number) => parseInt(h.slice(i, i + 2), 16) || 0;
+  return [v(0), v(2), v(4)];
+}
+
+export function rgbToHex([r, g, b]: [number, number, number]): string {
+  return `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+}
+
+/** 界面设置 → Rust 侧 BackgroundRemoval */
+export function toRemoval(s: RemoveBgSettings): BackgroundRemoval {
+  return {
+    color: s.auto ? null : hexToRgb(s.color),
+    tolerance: s.tolerance,
+    softness: s.softness,
+    contiguous: s.contiguous,
+    decontaminate: s.decontaminate,
+    trim: s.trim,
+    trim_padding: s.trim ? s.trimPadding : 0,
+  };
+}
 
 export const QUALITY_NORMAL = 85;
 export const QUALITY_HIGH = 70;
@@ -12,10 +73,35 @@ export const defaultSettings: Settings = {
     resize: { mode: 'original', percent: 50, width: null, height: null, lock: true },
     format: 'original',
   },
-  crop: { aspect: 'free', outWidth: null, outHeight: null, quality: 90 },
+  crop: { mode: 'manual', aspect: 'free', outWidth: null, outHeight: null, quality: 90 },
   convert: { format: 'webp', quality: 80, lossless: false },
+  removeBg: defaultRemoveBg,
+  // 默认去掉文字，只保留图标
+  smartCrop: { includeLabels: false, gap: null, minSize: null, size: 256, padding: 10, format: 'png' },
   output: { mode: 'suffix', dir: null, suffix: '.min' },
 };
+
+// v2：默认值改为只保留图标；换 key 让旧版本保存的"包含文字"不再覆盖新默认值
+const SMART_KEY = 'imgtool.smartCrop.v2';
+
+export function loadSmartCrop(): SmartCropSettings {
+  try {
+    return { ...defaultSettings.smartCrop, ...JSON.parse(localStorage.getItem(SMART_KEY) ?? '{}') };
+  } catch {
+    return defaultSettings.smartCrop;
+  }
+}
+
+export function saveSmartCrop(s: SmartCropSettings) {
+  localStorage.setItem(SMART_KEY, JSON.stringify(s));
+}
+
+export function toDetectOptions(s: SmartCropSettings): DetectOptions {
+  return { include_labels: s.includeLabels, gap: s.gap, min_size: s.minSize, tolerance: 12 };
+}
+
+/** 识别参数快照，参数不变就不重复识别 */
+export const detectKey = (s: SmartCropSettings) => JSON.stringify(toDetectOptions(s));
 
 export function aspectRatio(aspect: AspectPreset, item: ImageItem): number | null {
   switch (aspect) {
@@ -66,6 +152,16 @@ function compressResize(settings: Settings, item: ImageItem): ResizeSpec | null 
 }
 
 export function buildOptions(tool: Tool, settings: Settings, item: ImageItem): ProcessOptions {
+  if (tool === 'removebg') {
+    const r = settings.removeBg;
+    return {
+      remove_background: toRemoval(r),
+      format: r.format,
+      // PNG 无损保留平滑边缘；WebP/AVIF 用高质量有损
+      mode: r.format === 'png' ? { type: 'lossless' } : { type: 'quality', quality: 90 },
+      keep_original_if_larger: false,
+    };
+  }
   if (tool === 'crop') {
     const c = settings.crop;
     const rect = item.crop ?? defaultCropRect(item, aspectRatio(c.aspect, item));

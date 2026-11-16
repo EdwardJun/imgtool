@@ -33,6 +33,9 @@ pub struct BatchItem {
     pub kept_original: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_met: Option<bool>,
+    /// 去除背景时识别出的背景色、边缘匹配率、去除比例
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background: Option<imgcore::RemovalStats>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
@@ -88,24 +91,38 @@ fn is_generated(path: &Path, suffix: &str) -> bool {
             .unwrap_or(false)
 }
 
+/// 展开后的单个输入文件；`base` 是它的"相对基准"：
+/// 来自目录输入时为该目录（输出到目录时保留其下的子目录结构），单个文件时为文件所在目录（平铺）
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InputFile {
+    pub path: PathBuf,
+    pub base: PathBuf,
+}
+
 /// 展开输入：文件原样保留；目录递归查找可处理的图片，并跳过已生成的压缩产物
-pub fn expand_inputs(paths: &[PathBuf], exclude: &[String], output_suffix: &str) -> Result<Vec<PathBuf>, String> {
-    let mut out = Vec::new();
+pub fn expand_inputs(paths: &[PathBuf], exclude: &[String], output_suffix: &str) -> Result<Vec<InputFile>, String> {
+    let mut out: Vec<InputFile> = Vec::new();
     for p in paths {
         if p.is_dir() {
             let files = walk_images(p, exclude).map_err(|e| e.to_string())?;
-            out.extend(files.into_iter().filter(|f| is_processable(f) && !is_generated(f, output_suffix)));
+            out.extend(
+                files
+                    .into_iter()
+                    .filter(|f| is_processable(f) && !is_generated(f, output_suffix))
+                    .map(|f| InputFile { path: f, base: p.clone() }),
+            );
         } else {
-            out.push(p.clone());
+            let base = p.parent().map(Path::to_path_buf).unwrap_or_default();
+            out.push(InputFile { path: p.clone(), base });
         }
     }
     out.sort();
-    out.dedup();
+    out.dedup_by(|a, b| a.path == b.path);
     Ok(out)
 }
 
 pub fn run_batch(
-    mut files: Vec<PathBuf>,
+    mut files: Vec<InputFile>,
     resolved: &Resolved,
     project_root: Option<&Path>,
     dry_run: bool,
@@ -117,18 +134,19 @@ pub fn run_batch(
 
     let results: Vec<_> = files
         .par_iter()
-        .map(|input| {
+        .map(|f| {
             let job = FileJob {
-                input: input.clone(),
+                input: f.path.clone(),
                 options: resolved.options.clone(),
                 output: explicit_output.clone(),
                 policy: resolved.policy.clone(),
                 on_conflict: resolved.on_conflict,
                 project_root: project_root.map(Path::to_path_buf),
+                relative_base: Some(f.base.clone()),
                 dry_run,
                 write_when_unchanged: false,
             };
-            (input, run_file_job(&job))
+            (&f.path, run_file_job(&job))
         })
         .collect();
 
@@ -151,6 +169,7 @@ pub fn run_batch(
                     quality: rep.quality,
                     kept_original: rep.kept_original,
                     target_met: rep.target_met,
+                    background: rep.background,
                     warnings: rep.warnings,
                 });
             }

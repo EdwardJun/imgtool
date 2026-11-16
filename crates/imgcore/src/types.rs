@@ -128,7 +128,10 @@ pub enum CropSpec {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProcessOptions {
-    /// 先裁剪
+    /// 最先执行：去除纯色背景（输出需为 png/webp/avif 才能保留透明）
+    #[serde(default)]
+    pub remove_background: Option<crate::background::BackgroundRemoval>,
+    /// 再裁剪
     #[serde(default)]
     pub crop: Option<CropSpec>,
     /// 再缩放
@@ -150,6 +153,7 @@ pub struct ProcessOptions {
 impl Default for ProcessOptions {
     fn default() -> Self {
         Self {
+            remove_background: None,
             crop: None,
             resize: None,
             format: None,
@@ -193,6 +197,9 @@ pub struct ProcessReport {
     pub kept_original: bool,
     /// 目标体积模式下是否达标
     pub target_met: Option<bool>,
+    /// 去除背景的统计（识别出的背景色、去除比例等）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<crate::background::RemovalStats>,
     pub warnings: Vec<String>,
 }
 

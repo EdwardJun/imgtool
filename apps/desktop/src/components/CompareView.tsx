@@ -36,13 +36,10 @@ export function CompareView({ before, after, alt }: Props) {
     >
       <img className="compare-img" src={before} alt={`${alt} 原图`} draggable={false} />
       {after && (
-        <img
-          className="compare-img"
-          src={after}
-          alt={`${alt} 处理后`}
-          draggable={false}
-          style={{ clipPath: `inset(0 0 0 ${pos}%)` }}
-        />
+        // 结果层自带棋盘格底，透明区域不会透出下面的原图
+        <div className="compare-layer checkerboard" style={{ clipPath: `inset(0 0 0 ${pos}%)` }}>
+          <img className="compare-img" src={after} alt={`${alt} 处理后`} draggable={false} />
+        </div>
       )}
       {after && (
         <>

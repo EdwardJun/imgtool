@@ -142,6 +142,42 @@ fn rejects_svg_and_reports_info() {
 }
 
 #[test]
+fn remove_background_from_jpeg_outputs_transparent_png() {
+    // 白底 JPEG，中间一块蓝色方块
+    let img = DynamicImage::ImageRgba8(RgbaImage::from_fn(120, 80, |x, y| {
+        if (40..80).contains(&x) && (20..60).contains(&y) {
+            Rgba([30, 60, 200, 255])
+        } else {
+            Rgba([255, 255, 255, 255])
+        }
+    }));
+    let src = encode_as(&img, ImageFormat::Jpeg);
+    let opts = ProcessOptions {
+        remove_background: Some(BackgroundRemoval { trim: true, ..Default::default() }),
+        mode: CompressMode::Lossless,
+        ..Default::default()
+    };
+    let out = process(&src, &opts).unwrap();
+    assert_eq!(out.report.format, OutputFormat::Png, "JPEG 源默认改为 PNG 以保留透明");
+    assert!(!out.report.kept_original);
+    let stats = out.report.background.as_ref().unwrap();
+    assert!(stats.color.iter().all(|&c| c > 245), "{:?}", stats.color);
+    let decoded = image::load_from_memory(&out.data).unwrap().to_rgba8();
+    // trim 后只剩蓝色方块（JPEG 边缘有少量噪点，允许 ±3px）
+    assert!((40..=46).contains(&decoded.width()) && (40..=46).contains(&decoded.height()), "{:?}", decoded.dimensions());
+    let c = decoded.get_pixel(decoded.width() / 2, decoded.height() / 2);
+    assert_eq!(c[3], 255);
+}
+
+#[test]
+fn remove_background_warns_on_busy_background() {
+    let src = encode_as(&sample_image(200, 150, false), ImageFormat::Png);
+    let opts = ProcessOptions { remove_background: Some(BackgroundRemoval::default()), ..Default::default() };
+    let out = process(&src, &opts).unwrap();
+    assert!(out.report.warnings.iter().any(|w| w.contains("不是纯色")), "{:?}", out.report.warnings);
+}
+
+#[test]
 fn scan_flags_large_images_and_respects_gitignore() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

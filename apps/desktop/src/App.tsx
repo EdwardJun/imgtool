@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, App as AntApp, Button, Segmented, Spin, Tooltip } from 'antd';
 import {
+  SettingOutlined,
   ApiOutlined,
   AppstoreOutlined,
   DesktopOutlined,
@@ -14,8 +15,25 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 
 import { api, fileSrc, formatBytes, IMAGE_EXTENSIONS, savedPercent } from './api';
-import { aspectRatio, buildOptions, defaultCropRect, defaultSettings, settingsFromPreset } from './options';
-import type { ExportProgress, FoundPreset, ImageItem, Rect, Settings, Tool } from './types';
+import {
+  aspectRatio,
+  buildOptions,
+  defaultCropRect,
+  defaultSettings,
+  detectKey,
+  loadRemoveBg,
+  loadSmartCrop,
+  rgbToHex,
+  saveRemoveBg,
+  saveSmartCrop,
+  settingsFromPreset,
+  toDetectOptions,
+  toRemoval,
+} from './options';
+import { MultiCropEditor } from './components/MultiCropEditor';
+import { SmartCropPanel } from './panels/SmartCropPanel';
+import { RemoveBgPanel } from './panels/RemoveBgPanel';
+import type { ExportProgress, FoundPreset, ImageItem, Rect, Region, Settings, Tool } from './types';
 import { CompareView } from './components/CompareView';
 import { CropEditor } from './components/CropEditor';
 import { FitBox } from './components/FitBox';
@@ -27,23 +45,32 @@ import { CropPanel } from './panels/CropPanel';
 import { ConvertPanel } from './panels/ConvertPanel';
 import { GeneratePanel } from './panels/GeneratePanel';
 import { OutputSection } from './panels/OutputSection';
+import { GenerateResults } from './components/GenerateResults';
+import { useApiSettings, useGenerator } from './generate/useGenerator';
+import { SettingsModal } from './components/SettingsModal';
 
 const TOOLS: { label: string; value: Tool }[] = [
   { label: '图片压缩', value: 'compress' },
   { label: '裁剪尺寸', value: 'crop' },
   { label: '格式转换', value: 'convert' },
+  { label: '去除背景', value: 'removebg' },
   { label: '图片生成', value: 'generate' },
 ];
 
 const previewKey = (path: string, options: unknown) => `${path}|${JSON.stringify(options)}`;
 
 export default function App() {
-  const { message } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
   const [items, setItems] = useState<ImageItem[]>([]);
   const [current, setCurrent] = useState(0);
   const [tool, setTool] = useState<Tool>('compress');
   const [view, setView] = useState<'preview' | 'batch'>('preview');
-  const [settings, setSettings] = useState<Settings>(defaultSettings);
+  const [settings, setSettings] = useState<Settings>(() => ({ ...defaultSettings, removeBg: loadRemoveBg(), smartCrop: loadSmartCrop() }));
+  // 去除背景、智能裁剪参数需要记住
+  useEffect(() => saveRemoveBg(settings.removeBg), [settings.removeBg]);
+  useEffect(() => saveSmartCrop(settings.smartCrop), [settings.smartCrop]);
+  const [detecting, setDetecting] = useState(false);
+  const [selectedRegion, setSelectedRegion] = useState<number | null>(null);
   const [preset, setPreset] = useState<FoundPreset | null>(null);
   const [presetChecked, setPresetChecked] = useState(false);
   const [previewing, setPreviewing] = useState(false);
@@ -51,6 +78,9 @@ export default function App() {
   const [exporting, setExporting] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
+  const generator = useGenerator();
+  const apiSettings = useApiSettings();
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const previewSeq = useRef(0);
   const itemsRef = useRef(items);
   itemsRef.current = items;
@@ -151,8 +181,61 @@ export default function App() {
     setItems((prev) => prev.map((it) => ({ ...it, crop: defaultCropRect(it, aspectRatio(settings.crop.aspect, it)) })));
   };
 
+  // ---------- 智能裁剪 ----------
+  const smart = tool === 'crop' && settings.crop.mode === 'smart';
+  const smartKey = detectKey(settings.smartCrop);
+  const detectSeq = useRef(0);
+
+  const runDetect = useCallback(
+    async (target: ImageItem) => {
+      const seq = ++detectSeq.current;
+      setDetecting(true);
+      try {
+        const { regions, ...detectInfo } = await api.detectRegions(target.path, toDetectOptions(settings.smartCrop));
+        if (seq !== detectSeq.current) return;
+        updateItem(target.path, { regions, regionNames: [], regionsKey: smartKey, regionsEdited: false, regionsError: undefined, detectInfo });
+        setSelectedRegion(null);
+      } catch (e) {
+        if (seq === detectSeq.current) updateItem(target.path, { regionsError: String(e), regionsKey: smartKey });
+      } finally {
+        if (seq === detectSeq.current) setDetecting(false);
+      }
+    },
+    [settings.smartCrop, smartKey, updateItem],
+  );
+
+  // 参数变化或切换图片时自动识别（300ms 防抖）；手动调整过的框不自动覆盖
+  useEffect(() => {
+    if (!smart || !item || item.regionsKey === smartKey || item.regionsEdited) return;
+    const t = window.setTimeout(() => runDetect(item), 300);
+    return () => window.clearTimeout(t);
+  }, [smart, item?.path, item?.regionsKey, item?.regionsEdited, smartKey, runDetect]);
+
+  const redetect = () => {
+    if (!item) return;
+    if (item.regionsEdited) {
+      modal.confirm({
+        title: '重新识别？',
+        content: '当前图片的框已手动调整过，重新识别会覆盖这些修改。',
+        okText: '重新识别',
+        cancelText: '取消',
+        onOk: () => runDetect(item),
+      });
+    } else {
+      runDetect(item);
+    }
+  };
+
+  const setRegions = (regions: Region[], names?: string[]) => {
+    if (!item) return;
+    updateItem(item.path, { regions, regionNames: names ?? item.regionNames, regionsEdited: true });
+  };
+
   // ---------- 预览 ----------
-  const currentOptions = useMemo(() => (item && tool !== 'generate' ? buildOptions(tool, settings, item) : null), [item, tool, settings]);
+  const currentOptions = useMemo(
+    () => (item && tool !== 'generate' && !smart ? buildOptions(tool, settings, item) : null),
+    [item, tool, settings, smart],
+  );
   const currentKey = item && currentOptions ? previewKey(item.path, currentOptions) : null;
 
   useEffect(() => {
@@ -195,10 +278,37 @@ export default function App() {
   };
 
   // ---------- 导出 ----------
+  /** 智能裁剪导出：已识别/调整过的图片用界面上的框，其余由后端按当前参数识别 */
+  const exportSmart = async (selected: ImageItem[]) => {
+    const sc = settings.smartCrop;
+    setExporting(true);
+    try {
+      const { ok, errors } = await api.exportRegions(
+        selected.map((it) => {
+          const fresh = it.regionsEdited || it.regionsKey === smartKey;
+          return { path: it.path, regions: fresh && it.regions?.length ? it.regions : null, names: fresh ? it.regionNames ?? [] : [] };
+        }),
+        toDetectOptions(sc),
+        { size: sc.size, padding: sc.padding },
+        sc.format,
+        settings.output.mode === 'dir' ? settings.output.dir : null,
+      );
+      const count = ok.reduce((n, r) => n + r.files.length, 0);
+      const where = ok.length === 1 ? ok[0].out_dir : `${ok.length} 个 _icons 目录`;
+      if (errors.length) message.warning(`导出 ${count} 个图标到 ${where}；${errors.length} 张失败：${errors[0]}`);
+      else message.success(`已导出 ${count} 个 ${sc.size}×${sc.size} 图标到 ${where}`);
+    } catch (e) {
+      message.error(String(e));
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const exportSelected = async () => {
     const selected = items.filter((i) => i.selected);
     if (!selected.length) return message.warning('请至少选择一张图片');
     if (settings.output.mode === 'dir' && !settings.output.dir) return message.warning('请选择输出目录');
+    if (smart) return exportSmart(selected);
     setExporting(true);
     setItems((prev) => prev.map((it) => ({ ...it, exportState: undefined })));
     const unlisten = await listen<ExportProgress>('export-progress', (e) => {
@@ -248,7 +358,25 @@ export default function App() {
     return (
       <FitBox width={W} height={H}>
         {(size) =>
-          tool === 'crop' && item.crop ? (
+          smart ? (
+            <MultiCropEditor
+              src={fileSrc(item.display_path)}
+              alt={item.name}
+              imageWidth={W}
+              imageHeight={H}
+              boxWidth={size.width}
+              regions={item.regions ?? []}
+              selected={selectedRegion}
+              onSelect={setSelectedRegion}
+              onChange={(regions) => {
+                // 删除框时名字列表跟着对齐；新增框不带名字
+                const names = item.regionNames ?? [];
+                const removed = (item.regions?.length ?? 0) - regions.length;
+                const aligned = removed > 0 && selectedRegion !== null ? names.filter((_, i) => i !== selectedRegion) : names;
+                setRegions(regions, aligned);
+              }}
+            />
+          ) : tool === 'crop' && item.crop ? (
             <CropEditor
               src={fileSrc(item.display_path)}
               alt={item.name}
@@ -288,10 +416,27 @@ export default function App() {
         <Button icon={<ApiOutlined />} onClick={() => setMcpOpen(true)}>
           Agent 接入
         </Button>
+        <Tooltip title="设置">
+          <Button icon={<SettingOutlined />} aria-label="设置" onClick={() => setSettingsOpen(true)} />
+        </Tooltip>
       </header>
 
       <main className="workspace">
         <section className={`stage-area ${dragOver ? 'drag-over' : ''}`}>
+          {tool === 'generate' ? (
+            <GenerateResults
+              results={generator.results}
+              onRemove={generator.remove}
+              onClear={generator.clear}
+              onUse={async (paths) => {
+                await addPaths(paths);
+                setTool('compress');
+                setView('preview');
+                message.success(`已加入 ${paths.length} 张到图片列表`);
+              }}
+            />
+          ) : (
+          <>
           <Segmented
             className="view-switch"
             size="small"
@@ -318,7 +463,33 @@ export default function App() {
           ) : (
             <>
               <div className="stage">{stage()}</div>
-              {item && tool !== 'generate' && (
+              {item && smart && (
+                <div className="stats" aria-live="polite">
+                  {item.regionsError ? (
+                    <span className="stats-error">
+                      <WarningOutlined /> {item.regionsError}
+                    </span>
+                  ) : detecting && !item.regions ? (
+                    <span className="muted">识别中…</span>
+                  ) : (
+                    <>
+                      <strong>{item.regions?.length ?? 0}</strong>
+                      <span className="muted">个图标</span>
+                      {item.detectInfo && (
+                        <span className="muted">
+                          · {item.detectInfo.mode === 'alpha' ? '透明底' : '纯色底'} · 合并间距 {item.detectInfo.gap}px
+                          {item.detectInfo.labels_found > 0 && ` · 识别到 ${item.detectInfo.labels_found} 个文字标签`}
+                        </span>
+                      )}
+                      <span className="muted">
+                        → {settings.smartCrop.size}×{settings.smartCrop.size}
+                      </span>
+                    </>
+                  )}
+                  {detecting && <Spin size="small" />}
+                </div>
+              )}
+              {item && !smart && (
                 <div className="stats" aria-live="polite">
                   {item.previewError ? (
                     <span className="stats-error">
@@ -334,6 +505,12 @@ export default function App() {
                         {report.width}×{report.height}
                         {report.quality ? ` · Q${report.quality}` : ''}
                       </span>
+                      {report.background && (
+                        <span className="muted bg-detected">
+                          <span className="swatch" style={{ background: rgbToHex(report.background.color) }} />
+                          去除 {Math.round(report.background.removed_ratio * 100)}%
+                        </span>
+                      )}
                       {report.warnings.length > 0 && (
                         <Tooltip title={report.warnings.join('\n')}>
                           <WarningOutlined className="warn-icon" aria-label={report.warnings.join('；')} />
@@ -365,6 +542,8 @@ export default function App() {
               />
             </>
           )}
+          </>
+          )}
         </section>
 
         <aside className="side-panel">
@@ -374,7 +553,7 @@ export default function App() {
                 className="preset-alert"
                 type="info"
                 showIcon
-                message="检测到项目预设"
+                title="检测到项目预设"
                 description={<span className="preset-path">{preset.path}</span>}
                 action={
                   <Button size="small" onClick={applyPreset}>
@@ -387,6 +566,18 @@ export default function App() {
             )}
             {tool === 'compress' && <CompressPanel value={settings.compress} current={item} onChange={(compress) => setSettings((s) => ({ ...s, compress }))} />}
             {tool === 'crop' && (
+              <Segmented
+                block
+                className="crop-mode"
+                value={settings.crop.mode}
+                onChange={(m) => setSettings((s) => ({ ...s, crop: { ...s.crop, mode: m as 'manual' | 'smart' } }))}
+                options={[
+                  { label: '手动裁剪', value: 'manual' },
+                  { label: '智能裁剪', value: 'smart' },
+                ]}
+              />
+            )}
+            {tool === 'crop' && !smart && (
               <CropPanel
                 value={settings.crop}
                 current={item}
@@ -396,19 +587,46 @@ export default function App() {
                 onApplyAll={resetAllCrops}
               />
             )}
+            {smart && (
+              <SmartCropPanel
+                value={settings.smartCrop}
+                current={item}
+                detecting={detecting}
+                selected={selectedRegion}
+                onChange={(smartCrop) => setSettings((s) => ({ ...s, smartCrop }))}
+                onSelect={setSelectedRegion}
+                onRegionsChange={setRegions}
+                onRedetect={redetect}
+              />
+            )}
             {tool === 'convert' && <ConvertPanel value={settings.convert} onChange={(convert) => setSettings((s) => ({ ...s, convert }))} />}
-            {tool === 'generate' && <GeneratePanel />}
-            {tool !== 'generate' && <OutputSection value={settings.output} onChange={(output) => setSettings((s) => ({ ...s, output }))} />}
+            {tool === 'removebg' && <RemoveBgPanel value={settings.removeBg} current={item} onChange={(removeBg) => setSettings((s) => ({ ...s, removeBg }))} />}
+            {tool === 'generate' && (
+              <GeneratePanel
+                running={generator.running}
+                onGenerate={generator.generate}
+                removal={toRemoval(settings.removeBg)}
+                onEditRemoval={() => setTool('removebg')}
+                api={apiSettings.value}
+                onOpenSettings={() => setSettingsOpen(true)}
+              />
+            )}
+            {tool !== 'generate' && <OutputSection value={settings.output} smart={smart} onChange={(output) => setSettings((s) => ({ ...s, output }))} />}
           </div>
           {tool !== 'generate' && (
             <Button type="primary" size="large" block icon={<ExportOutlined />} loading={exporting} disabled={!selectedCount} onClick={exportSelected}>
-              导出{selectedCount ? `（${selectedCount}）` : ''}
+              {smart
+                ? selectedCount > 1
+                  ? `导出 ${selectedCount} 张图的图标`
+                  : `导出 ${item?.selected ? item.regions?.length ?? 0 : 0} 个图标`
+                : `导出${selectedCount ? `（${selectedCount}）` : ''}`}
             </Button>
           )}
         </aside>
       </main>
 
       <McpModal open={mcpOpen} onClose={() => setMcpOpen(false)} />
+      <SettingsModal open={settingsOpen} value={apiSettings.value} onClose={() => setSettingsOpen(false)} onSave={apiSettings.save} />
     </div>
   );
 }

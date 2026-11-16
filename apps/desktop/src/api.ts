@@ -1,5 +1,16 @@
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import type {
+  EnhanceResult,
+  PromptContext,
+  UploadedRef,
+  DetectOptions,
+  DetectResult,
+  Region,
+  SplitResult,
+  SquareOptions,
+  ApiSettings,
+  GenerateParams,
+  GeneratedFile,
   ExportSummary,
   ExportTarget,
   FoundPreset,
@@ -34,6 +45,31 @@ export const api = {
   mcpStatus: () => invoke<McpStatus>('mcp_status'),
   mcpInstall: (client: McpClient) => invoke<string>('mcp_install', { client }),
   initialPaths: () => invoke<string[]>('initial_paths'),
+  getApiSettings: () => invoke<ApiSettings>('get_api_settings'),
+  saveApiSettings: (settings: ApiSettings) => invoke<void>('save_api_settings', { settings }),
+  generateImage: (params: GenerateParams) => invoke<GeneratedFile>('generate_image', { params }),
+  saveFiles: (paths: string[], dir: string) => invoke<string[]>('save_files', { paths, dir }),
+  enhancePrompt: (params: { base_url: string; api_key: string; model: string; prompt: string; context: PromptContext }) =>
+    invoke<EnhanceResult>('enhance_prompt', { params }),
+  uploadReference: (baseUrl: string, apiKey: string, path: string) =>
+    invoke<UploadedRef>('upload_reference', { baseUrl, apiKey, path }),
+  detectRegions: (path: string, options: DetectOptions) => invoke<DetectResult>('detect_regions', { path, options }),
+  async exportRegions(
+    items: { path: string; regions: Region[] | null; names: string[] }[],
+    detect: DetectOptions,
+    square: SquareOptions,
+    format: 'png' | 'webp',
+    dir: string | null,
+  ) {
+    const results = await invoke<({ Ok: SplitResult } | { Err: string })[]>('export_regions', { items, detect, square, format, dir });
+    const ok: SplitResult[] = [];
+    const errors: string[] = [];
+    for (const r of results) {
+      if ('Ok' in r) ok.push(r.Ok);
+      else errors.push(r.Err);
+    }
+    return { ok, errors };
+  },
 };
 
 // 开发环境浏览器 Mock 模式下图片是 blob: URL，直接使用

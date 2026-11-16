@@ -193,6 +193,7 @@ pub async fn export_images(app: AppHandle, items: Vec<ExportItem>, target: Expor
                     policy: policy.clone(),
                     on_conflict: ConflictPolicy::Rename,
                     project_root: None,
+                    relative_base: None,
                     dry_run: false,
                     write_when_unchanged,
                 };

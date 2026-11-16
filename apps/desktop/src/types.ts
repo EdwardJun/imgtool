@@ -22,7 +22,24 @@ export type CropSpec =
   | { type: 'rect'; x: number; y: number; width: number; height: number }
   | { type: 'aspect'; width: number; height: number };
 
+export interface BackgroundRemoval {
+  color?: [number, number, number] | null;
+  tolerance: number;
+  softness: number;
+  contiguous: boolean;
+  decontaminate: boolean;
+  trim: boolean;
+  trim_padding: number;
+}
+
+export interface RemovalStats {
+  color: [number, number, number];
+  border_match: number;
+  removed_ratio: number;
+}
+
 export interface ProcessOptions {
+  remove_background?: BackgroundRemoval | null;
   crop?: CropSpec | null;
   resize?: ResizeSpec | null;
   format?: OutputFormat | null;
@@ -51,6 +68,7 @@ export interface ProcessReport {
   quality: number | null;
   kept_original: boolean;
   target_met: boolean | null;
+  background?: RemovalStats | null;
   warnings: string[];
 }
 
@@ -105,6 +123,69 @@ export interface McpClientStatus {
   up_to_date: boolean;
 }
 
+export interface ApiSettings {
+  base_url: string;
+  api_key: string;
+  remember: boolean;
+  /** 提示词优化用的对话模型 */
+  prompt_model?: string;
+}
+
+export interface GenerateParams {
+  base_url: string;
+  api_key: string;
+  model: string;
+  prompt: string;
+  width: number;
+  height: number;
+  reference_images: string[];
+  transparent: boolean;
+  format: OutputFormat;
+  /** 生成后本地去除背景 */
+  remove_background?: BackgroundRemoval | null;
+  /** 生成后本地调整到的最终尺寸 */
+  final_size?: { width: number; height: number; fit: ResizeFit } | null;
+}
+
+/** 提示词优化时附带的生成参数 */
+export interface PromptContext {
+  image_model?: string | null;
+  ratio?: string | null;
+  size?: string | null;
+  remove_background: boolean;
+  reference_count: number;
+  final_size?: string | null;
+}
+
+export interface EnhanceResult {
+  prompt: string;
+  model: string;
+  total_tokens: number | null;
+}
+
+/** 本地参考图上传到图床后的结果 */
+export interface UploadedRef {
+  path: string;
+  url: string;
+  /** 链接过期时间（Unix 秒） */
+  expires_at: number;
+  bytes: number;
+  cached: boolean;
+  compressed: boolean;
+}
+
+export interface GeneratedFile {
+  task_id: string;
+  path: string;
+  format: string;
+  width: number;
+  height: number;
+  bytes: number;
+  source_url: string | null;
+  revised_prompt: string | null;
+  warnings: string[];
+}
+
 export interface McpStatus {
   command: string | null;
   error: string | null;
@@ -121,17 +202,99 @@ export interface Rect {
   height: number;
 }
 
+// ---------- 智能裁剪 ----------
+
+export type RegionKind = 'icon' | 'icon_with_label';
+
+export interface Region extends Rect {
+  kind: RegionKind;
+}
+
+export interface DetectOptions {
+  background?: [number, number, number] | null;
+  tolerance: number;
+  gap?: number | null;
+  include_labels: boolean;
+  min_size?: number | null;
+}
+
+export interface DetectResult {
+  regions: Region[];
+  gap: number;
+  min_size: number;
+  mode: 'alpha' | 'color';
+  background: [number, number, number] | null;
+  labels_found: number;
+}
+
+export interface SquareOptions {
+  size: number;
+  padding: number;
+  background?: [number, number, number] | null;
+}
+
+export interface SplitFile {
+  path: string;
+  name: string;
+  region: Region;
+  bytes: number;
+  written: boolean;
+}
+
+export interface SplitResult {
+  input: string;
+  out_dir: string;
+  size: number;
+  mode: string;
+  files: SplitFile[];
+}
+
+/** 智能裁剪设置（保存在 localStorage） */
+export interface SmartCropSettings {
+  includeLabels: boolean;
+  /** null = 自动 */
+  gap: number | null;
+  minSize: number | null;
+  size: number;
+  padding: number;
+  format: 'png' | 'webp';
+}
+
 export interface ImageItem extends LoadedImage {
   selected: boolean;
   /** 裁剪框（原图像素坐标），每张图独立 */
   crop?: Rect;
+  /** 智能裁剪识别/编辑后的框 */
+  regions?: Region[];
+  regionNames?: string[];
+  /** 识别时使用的参数快照，参数变化后需要重新识别 */
+  regionsKey?: string;
+  /** 用户手动改过框，重新识别前需要确认 */
+  regionsEdited?: boolean;
+  regionsError?: string;
+  detectInfo?: Omit<DetectResult, 'regions'>;
   preview?: PreviewResult;
   previewKey?: string;
   previewError?: string;
   exportState?: { ok: boolean; output: string | null; error: string | null; report: ProcessReport | null };
 }
 
-export type Tool = 'compress' | 'crop' | 'convert' | 'generate';
+export type Tool = 'compress' | 'crop' | 'convert' | 'removebg' | 'generate';
+
+/** 去除背景页的设置（保存在 localStorage，生成图片时也复用） */
+export interface RemoveBgSettings {
+  /** true = 自动识别边缘背景色 */
+  auto: boolean;
+  /** 手动指定的背景色 #rrggbb */
+  color: string;
+  tolerance: number;
+  softness: number;
+  contiguous: boolean;
+  decontaminate: boolean;
+  trim: boolean;
+  trimPadding: number;
+  format: 'png' | 'webp' | 'avif';
+}
 
 export type ResizeMode = 'original' | 'percent' | 'max' | 'custom';
 
@@ -153,6 +316,8 @@ export interface CompressSettings {
 export type AspectPreset = 'free' | 'original' | '1:1' | '4:3' | '3:4' | '16:9' | '9:16';
 
 export interface CropSettings {
+  /** 手动裁剪单个区域 / 智能识别多个图标 */
+  mode: 'manual' | 'smart';
   aspect: AspectPreset;
   outWidth: number | null;
   outHeight: number | null;
@@ -175,5 +340,7 @@ export interface Settings {
   compress: CompressSettings;
   crop: CropSettings;
   convert: ConvertSettings;
+  removeBg: RemoveBgSettings;
+  smartCrop: SmartCropSettings;
   output: OutputSettings;
 }

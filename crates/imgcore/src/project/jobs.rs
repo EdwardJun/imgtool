@@ -18,6 +18,8 @@ pub struct FileJob {
     pub policy: OutputPolicy,
     pub on_conflict: ConflictPolicy,
     pub project_root: Option<PathBuf>,
+    /// dir 输出模式下子目录结构相对的基准目录（见 plan_output_path）
+    pub relative_base: Option<PathBuf>,
     /// 只计算结果，不写文件
     pub dry_run: bool,
     /// 结果保留了原图时是否仍写出副本（导出到目录时需要，同目录加后缀时不需要）
@@ -38,7 +40,7 @@ pub fn run_file_job(job: &FileJob) -> Result<JobResult> {
     let out = crate::process(&data, &job.options)?;
     let planned = match &job.output {
         Some(p) => p.clone(),
-        None => plan_output_path(&job.input, out.report.format, &job.policy, job.project_root.as_deref())?,
+        None => plan_output_path(&job.input, out.report.format, &job.policy, job.project_root.as_deref(), job.relative_base.as_deref())?,
     };
     let skip_write = job.dry_run || (out.report.kept_original && !job.write_when_unchanged && !same_path(&planned, &job.input));
     if skip_write {

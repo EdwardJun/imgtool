@@ -1,12 +1,16 @@
 //! imgcore：图片处理核心库，桌面端与 MCP Server 共用，保证两边结果一致。
 
+pub mod background;
 pub mod decode;
+pub mod detect;
 pub mod encode;
 pub mod error;
 pub mod pipeline;
+pub mod postprocess;
 pub mod project;
 pub mod types;
 
+pub use background::{BackgroundRemoval, RemovalStats};
 pub use decode::probe;
 pub use error::{Error, Result};
 pub use pipeline::process;

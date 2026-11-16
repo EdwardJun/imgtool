@@ -21,6 +21,23 @@ pub fn process(input: &[u8], opts: &ProcessOptions) -> Result<ProcessOutput> {
     let mut img = decoded.image;
     let (orig_w, orig_h) = (img.width(), img.height());
 
+    let mut bg_stats = None;
+    if let Some(removal) = &opts.remove_background {
+        let (out, stats) = crate::background::remove_background(&img, removal);
+        // 纯色背景的边缘匹配率接近 100%（实测白底产品图 100%，场景插画 58%~81%）
+        if stats.border_match < 0.9 {
+            warnings.push(format!(
+                "背景不是纯色（边缘只有 {:.0}% 与背景色匹配），去除效果可能不理想，可调高容差或手动指定背景色",
+                stats.border_match * 100.0
+            ));
+        }
+        if stats.removed_ratio < 0.001 {
+            warnings.push("没有找到可去除的背景，请检查背景色或调高容差".to_string());
+        }
+        img = out;
+        bg_stats = Some(stats);
+    }
+
     if let Some(crop) = &opts.crop {
         img = apply_crop(img, crop)?;
     }
@@ -29,9 +46,13 @@ pub fn process(input: &[u8], opts: &ProcessOptions) -> Result<ProcessOutput> {
     }
 
     let source_fmt = OutputFormat::from_extension(source_name);
-    let out_fmt = opts.format.or(source_fmt).unwrap_or(OutputFormat::Png);
+    let removed_bg = bg_stats.is_some();
+    // 去除背景且未指定格式时，原格式不支持透明（如 JPEG）就改为 PNG
+    let default_fmt = source_fmt.filter(|f| !removed_bg || f.supports_alpha());
+    let out_fmt = opts.format.or(default_fmt).unwrap_or(OutputFormat::Png);
     let geometry_changed = (img.width(), img.height()) != (orig_w, orig_h);
-    let same_as_source = !geometry_changed && source_fmt == Some(out_fmt);
+    // 内容被修改（去背景）时不能回退为原图
+    let same_as_source = !geometry_changed && !removed_bg && source_fmt == Some(out_fmt);
     let background = opts.background.unwrap_or([255, 255, 255]);
 
     let original_report = |data_len: u64| ProcessReport {
@@ -46,6 +67,7 @@ pub fn process(input: &[u8], opts: &ProcessOptions) -> Result<ProcessOutput> {
         quality: None,
         kept_original: false,
         target_met: None,
+        background: None,
         warnings: Vec::new(),
     };
 
@@ -113,6 +135,7 @@ pub fn process(input: &[u8], opts: &ProcessOptions) -> Result<ProcessOutput> {
         quality,
         kept_original: false,
         target_met,
+        background: bg_stats,
         warnings,
     };
     Ok(ProcessOutput { data, report })

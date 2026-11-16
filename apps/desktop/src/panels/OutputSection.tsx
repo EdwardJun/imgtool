@@ -5,10 +5,12 @@ import type { OutputSettings } from '../types';
 
 interface Props {
   value: OutputSettings;
+  /** 智能裁剪：输出到 <原名>_icons/ 子目录，不使用文件名后缀 */
+  smart?: boolean;
   onChange: (v: OutputSettings) => void;
 }
 
-export function OutputSection({ value, onChange }: Props) {
+export function OutputSection({ value, smart, onChange }: Props) {
   const pickDir = async () => {
     const dir = await open({ directory: true, multiple: false, title: '选择输出目录' });
     if (typeof dir === 'string') onChange({ ...value, mode: 'dir', dir });
@@ -22,7 +24,7 @@ export function OutputSection({ value, onChange }: Props) {
         <Radio value="dir">指定目录</Radio>
       </Radio.Group>
       {value.mode === 'suffix' ? (
-        <Input
+        smart ? null : <Input
           aria-label="文件名后缀"
           size="small"
           prefix={<span className="muted">文件名后缀</span>}
@@ -42,7 +44,13 @@ export function OutputSection({ value, onChange }: Props) {
         />
       )}
       <div className="panel-hint block">
-        {value.mode === 'suffix' ? '转换格式时写为同名新扩展名；不会覆盖原图，重名自动加序号' : '重名文件自动加序号'}
+        {smart
+          ? value.mode === 'suffix'
+            ? '写到原图旁的「原名_icons」文件夹，重名自动加序号'
+            : '写到所选目录下的「原名_icons」文件夹，重名自动加序号'
+          : value.mode === 'suffix'
+            ? '转换格式时写为同名新扩展名；不会覆盖原图，重名自动加序号'
+            : '重名文件自动加序号'}
       </div>
     </div>
   );

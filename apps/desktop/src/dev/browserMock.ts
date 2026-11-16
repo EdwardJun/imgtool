@@ -26,6 +26,110 @@ function makeSample(name: string, width: number, height: number, hue: number) {
   return canvas;
 }
 
+/** 白底产品图：用来调试去除背景 */
+function makeProduct(width: number, height: number) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#fdfdfd';
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = '#d42a2a';
+  ctx.beginPath();
+  ctx.roundRect(width * 0.2, height * 0.25, width * 0.6, height * 0.5, 40);
+  ctx.fill();
+  ctx.fillStyle = '#fdfdfd';
+  ctx.beginPath();
+  ctx.arc(width * 0.62, height * 0.5, height * 0.14, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#222';
+  ctx.fillRect(width * 0.28, height * 0.35, width * 0.18, height * 0.3);
+  return canvas;
+}
+
+/** 透明底导航栏：5 个线性图标 + 中文标签，用来调试智能裁剪 */
+function makeNav(width: number, height: number) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+  ctx.strokeStyle = '#ddd';
+  ctx.fillStyle = '#ddd';
+  ctx.lineWidth = 7;
+  ctx.font = '30px "PingFang SC", sans-serif';
+  ctx.textAlign = 'center';
+  const labels = ['首页', '发现', '发布', '消息', '我的'];
+  labels.forEach((label, i) => {
+    const cx = 160 + i * 220;
+    const cy = 200;
+    ctx.beginPath();
+    if (i === 1) ctx.arc(cx, cy, 40, 0, Math.PI * 2);
+    else ctx.roundRect(cx - 40, cy - 40, 80, 80, i === 3 ? 30 : 12);
+    ctx.stroke();
+    if (i === 3) for (let d = -1; d <= 1; d++) ctx.fillRect(cx + d * 20 - 4, cy - 4, 8, 8);
+    if (i === 2) {
+      ctx.fillRect(cx - 3, cy - 22, 6, 44);
+      ctx.fillRect(cx - 22, cy - 3, 44, 6);
+    }
+    ctx.fillText(label, cx, cy + 90);
+  });
+  return canvas;
+}
+
+/** 浏览器 Mock 的简化识别：按列投影切分，只用于看界面 */
+function mockDetect(canvas: HTMLCanvasElement, gap: number) {
+  const ctx = canvas.getContext('2d')!;
+  const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const fg = (x: number, y: number) => {
+    const i = (y * width + x) * 4;
+    return data[i + 3] > 32 && (data[i] < 240 || data[i + 3] < 255);
+  };
+  const cols: [number, number][] = [];
+  for (let x = 0; x < width; x++) {
+    let y0 = -1;
+    let y1 = -1;
+    for (let y = 0; y < height; y++) if (fg(x, y)) (y0 < 0 && (y0 = y), (y1 = y));
+    cols.push([y0, y1]);
+  }
+  const regions = [];
+  let start = -1;
+  let last = -1;
+  for (let x = 0; x <= width; x++) {
+    const on = x < width && cols[x][0] >= 0;
+    if (on) {
+      if (start < 0) start = x;
+      last = x;
+    } else if (start >= 0 && x - last > gap) {
+      const ys = cols.slice(start, last + 1).filter((c) => c[0] >= 0);
+      const y0 = Math.min(...ys.map((c) => c[0]));
+      const y1 = Math.max(...ys.map((c) => c[1]));
+      regions.push({ x: start, y: y0, width: last - start + 1, height: y1 - y0 + 1, kind: 'icon_with_label' });
+      start = -1;
+    }
+  }
+  return regions;
+}
+
+/** 粗略模拟去除背景：只做全图阈值，用来看界面效果 */
+function mockRemoveBg(src: HTMLCanvasElement, r: { color?: number[] | null; tolerance: number; softness: number }) {
+  const c = document.createElement('canvas');
+  c.width = src.width;
+  c.height = src.height;
+  const ctx = c.getContext('2d')!;
+  ctx.drawImage(src, 0, 0);
+  const data = ctx.getImageData(0, 0, c.width, c.height);
+  const bg = r.color ?? [data.data[0], data.data[1], data.data[2]];
+  const tol = r.tolerance;
+  const limit = tol + r.softness;
+  for (let i = 0; i < data.data.length; i += 4) {
+    const d = Math.hypot(data.data[i] - bg[0], data.data[i + 1] - bg[1], data.data[i + 2] - bg[2]) / 441.67 * 100;
+    const w = d <= tol ? 1 : d < limit ? 1 - (d - tol) / (limit - tol) : 0;
+    data.data[i + 3] = Math.round(data.data[i + 3] * (1 - w));
+  }
+  ctx.putImageData(data, 0, 0);
+  return { canvas: c, color: bg as [number, number, number] };
+}
+
 async function toBlob(canvas: HTMLCanvasElement, type: string, quality: number) {
   return new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), type, quality));
 }
@@ -42,6 +146,8 @@ export async function install() {
   await register('/demo/photo.png', makeSample('photo', 1600, 1000, 200));
   await register('/demo/square.png', makeSample('square', 800, 800, 20));
   await register('/demo/tall.png', makeSample('tall', 600, 1000, 300));
+  await register('/demo/product.png', makeProduct(900, 700));
+  await register('/demo/nav.png', makeNav(1200, 500));
 
   mockIPC(
     async (cmd, args) => {
@@ -68,6 +174,12 @@ export async function install() {
           const b = blobs.get(a.path)!;
           const o = a.options;
           let src: HTMLCanvasElement = b.canvas;
+          let background = null;
+          if (o.remove_background) {
+            const r = mockRemoveBg(src, o.remove_background);
+            src = r.canvas;
+            background = { color: r.color, border_match: 1, removed_ratio: 0.5 };
+          }
           if (o.crop?.type === 'rect') {
             const c = document.createElement('canvas');
             c.width = o.crop.width;
@@ -100,6 +212,7 @@ export async function install() {
               quality: o.mode.type === 'quality' ? o.mode.quality : 60,
               kept_original: false,
               target_met: o.mode.type === 'target_size' ? blob.size <= o.mode.max_bytes : null,
+              background,
               warnings: format === 'avif' ? ['浏览器 Mock 模式用 WebP 代替 AVIF'] : [],
             },
           };
@@ -121,6 +234,51 @@ export async function install() {
           };
         case 'mcp_install':
           return '~/.cursor/mcp.json';
+        case 'get_api_settings':
+          return JSON.parse(localStorage.getItem('mock.api') ?? '{"base_url":"","api_key":"","remember":false}');
+        case 'save_api_settings':
+          localStorage.setItem('mock.api', JSON.stringify(a.settings));
+          return null;
+        case 'generate_image': {
+          const p = a.params;
+          await new Promise((r) => setTimeout(r, 1500));
+          if (!p.api_key.startsWith('sk-')) throw '生成服务调用失败: 创建任务失败: HTTP 401 Unauthorized Invalid token（请检查 API Key）';
+          const canvas = makeSample(p.model, Math.round(p.width / 4), Math.round(p.height / 4), (p.prompt.length * 37) % 360);
+          const blob = await toBlob(canvas, 'image/png', 1);
+          return {
+            task_id: 'task_mock',
+            path: URL.createObjectURL(blob),
+            format: p.format,
+            width: p.width,
+            height: p.height,
+            bytes: blob.size,
+            source_url: null,
+            revised_prompt: p.prompt,
+            warnings: p.remove_background ? ['浏览器 Mock 模式不会真正去除背景'] : [],
+          };
+        }
+        case 'save_files':
+          return a.paths;
+        case 'enhance_prompt': {
+          await new Promise((r) => setTimeout(r, 1200));
+          const p = a.params;
+          const bg = p.context.remove_background ? '，纯白色背景（#FFFFFF），无投影' : '';
+          return { prompt: `${p.prompt}，精致的扁平插画风格，主体居中，柔和光线，色彩干净，细节清晰${bg}，高清`, model: p.model || 'deepseek-v4.1-flash', total_tokens: 500 };
+        }
+        case 'upload_reference': {
+          await new Promise((r) => setTimeout(r, 800));
+          if (String(a.path).includes('fail')) throw '上传参考图失败: HTTP 413 图片过大';
+          return { path: a.path, url: 'https://example.com/mock.png', expires_at: Math.floor(Date.now() / 1000) + 86400, bytes: 1000, cached: false, compressed: false };
+        }
+        case 'detect_regions': {
+          const b = blobs.get(a.path)!;
+          const gap = a.options.gap ?? Math.max(4, Math.round(Math.max(b.width, b.height) * 0.015));
+          return { regions: mockDetect(b.canvas, gap), gap, min_size: 12, mode: 'alpha', background: null, labels_found: 0 };
+        }
+        case 'export_regions':
+          return a.items.map((it: { path: string; regions: unknown[] | null }) => ({
+            Ok: { input: it.path, out_dir: it.path.replace(/\.\w+$/, '_icons'), size: a.square.size, mode: it.regions ? 'manual' : 'alpha', files: (it.regions ?? [1, 2, 3]).map((_, i) => ({ path: `icon_${i + 1}.png`, name: `icon_${i + 1}`, bytes: 1000, written: true })) },
+          }));
         case 'plugin:dialog|open':
           return null;
         default:

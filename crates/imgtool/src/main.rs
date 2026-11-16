@@ -1,6 +1,9 @@
 //! imgtool：命令行 + MCP Server。桌面端把它作为 sidecar 一起分发。
 
 mod batch;
+mod gen_tasks;
+mod genconfig;
+mod intake;
 mod mcp;
 mod options;
 mod workspace;
@@ -14,7 +17,7 @@ use imgcore::project::{scan, ConflictPolicy, OutputMode, ProjectPreset, ScanOpti
 use imgcore::{OutputFormat, ResizeFit};
 
 use crate::batch::{expand_inputs, human_bytes, run_batch};
-use crate::options::{parse_aspect, parse_rect, resolve, Overrides};
+use crate::options::{parse_aspect, parse_color, parse_rect, resolve, Overrides};
 
 #[derive(Parser)]
 #[command(name = "imgtool", version, about = "图片压缩 / 裁剪 / 格式转换，支持作为 MCP Server 供 Agent 调用")]
@@ -48,6 +51,8 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// 智能裁剪：识别图中的多个图标，逐个导出为正方形图片
+    Split(SplitArgs),
     /// 在目录下创建 .imgtool.toml 预设模板
     Init {
         #[arg(default_value = ".")]
@@ -105,6 +110,49 @@ enum ConflictArg {
 }
 
 #[derive(Args)]
+struct SplitArgs {
+    /// 包含多个图标的图片
+    path: PathBuf,
+    /// 把图标下方的文字标签一起裁进去（默认只保留图标）
+    #[arg(long)]
+    with_labels: bool,
+    /// 输出边长（像素）
+    #[arg(long, default_value_t = 256)]
+    size: u32,
+    /// 四周留白百分比 0-40
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u8).range(0..=40))]
+    padding: u8,
+    /// 合并间距（像素），不传则自动
+    #[arg(long)]
+    gap: Option<u32>,
+    /// 最小尺寸（像素），不传则自动
+    #[arg(long)]
+    min_size: Option<u32>,
+    /// 背景色，如 #ffffff；不传则自动判断（透明底或边缘颜色）
+    #[arg(long)]
+    bg_color: Option<String>,
+    /// 与背景色的容差 0-100
+    #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u8).range(0..=100))]
+    tolerance: u8,
+    /// 按顺序命名，逗号分隔，如 home,discover,publish
+    #[arg(long, value_delimiter = ',')]
+    names: Vec<String>,
+    /// 输出格式
+    #[arg(short, long, value_enum, default_value = "png")]
+    format: FormatArg,
+    /// 输出目录，默认 <原名>_icons/
+    #[arg(short, long)]
+    out_dir: Option<PathBuf>,
+    #[arg(long, value_enum)]
+    on_conflict: Option<ConflictArg>,
+    /// 只识别，不写文件
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
 struct ProcessArgs {
     /// 图片文件或目录
     #[arg(required = true)]
@@ -135,6 +183,24 @@ struct ProcessArgs {
     /// 按矩形裁剪：x,y,w,h
     #[arg(long)]
     rect: Option<String>,
+    /// 去除纯色背景（输出 jpg 时会改为 png 以保留透明）
+    #[arg(long)]
+    remove_bg: bool,
+    /// 背景色，如 #ffffff；不传则自动识别边缘颜色
+    #[arg(long, requires = "remove_bg")]
+    bg_color: Option<String>,
+    /// 去背景容差 0-100（默认 12）
+    #[arg(long, requires = "remove_bg", value_parser = clap::value_parser!(u8).range(0..=100))]
+    bg_tolerance: Option<u8>,
+    /// 边缘柔和度 0-100（默认 8）
+    #[arg(long, requires = "remove_bg", value_parser = clap::value_parser!(u8).range(0..=100))]
+    bg_softness: Option<u8>,
+    /// 全图匹配背景色（默认只去除与边缘相连的背景）
+    #[arg(long, requires = "remove_bg")]
+    bg_global: bool,
+    /// 去背景后裁掉四周透明空白，值为保留边距像素
+    #[arg(long, requires = "remove_bg", num_args = 0..=1, default_missing_value = "0")]
+    trim: Option<u32>,
     /// 输出方式
     #[arg(long, value_enum)]
     mode: Option<ModeArg>,
@@ -210,6 +276,57 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Command::Split(a) => {
+            let job = imgcore::project::SplitJob {
+                input: a.path.clone(),
+                regions: None,
+                detect: imgcore::detect::DetectOptions {
+                    background: a.bg_color.as_deref().map(parse_color).transpose().map_err(anyhow::Error::msg)?,
+                    tolerance: a.tolerance,
+                    gap: a.gap,
+                    include_labels: a.with_labels,
+                    min_size: a.min_size,
+                },
+                square: imgcore::detect::SquareOptions { size: a.size, padding: a.padding, background: None },
+                names: a.names.clone(),
+                out_dir: a.out_dir.clone(),
+                format: a.format.into(),
+                on_conflict: match a.on_conflict.unwrap_or(ConflictArg::Rename) {
+                    ConflictArg::Error => ConflictPolicy::Error,
+                    ConflictArg::Overwrite => ConflictPolicy::Overwrite,
+                    ConflictArg::Rename => ConflictPolicy::Rename,
+                },
+                dry_run: a.dry_run,
+            };
+            let r = imgcore::project::split_file(&job)?;
+            if a.json {
+                println!("{}", serde_json::to_string_pretty(&r)?);
+            } else {
+                for f in &r.files {
+                    let g = f.region;
+                    println!(
+                        "{} {}  ({},{} {}x{})  {}",
+                        if f.written { "✓" } else { "·" },
+                        f.path,
+                        g.x,
+                        g.y,
+                        g.width,
+                        g.height,
+                        human_bytes(f.bytes)
+                    );
+                }
+                println!(
+                    "{}{} 个图标 → {}（{}×{}，识别方式 {}）",
+                    if a.dry_run { "预计导出 " } else { "已导出 " },
+                    r.files.len(),
+                    r.out_dir,
+                    r.size,
+                    r.size,
+                    r.mode
+                );
+            }
+            Ok(())
+        }
         Command::Init { dir, force } => {
             let target = dir.join(PRESET_FILE);
             if target.exists() && !force {
@@ -243,7 +360,26 @@ fn run_process(args: ProcessArgs, require_format: bool) -> anyhow::Result<()> {
         (_, Some(r)) => Some(parse_rect(r).map_err(anyhow::Error::msg)?),
         _ => None,
     };
+    let remove_background = if args.remove_bg {
+        let mut r = imgcore::BackgroundRemoval {
+            color: args.bg_color.as_deref().map(parse_color).transpose().map_err(anyhow::Error::msg)?,
+            contiguous: !args.bg_global,
+            trim: args.trim.is_some(),
+            trim_padding: args.trim.unwrap_or(0),
+            ..Default::default()
+        };
+        if let Some(t) = args.bg_tolerance {
+            r.tolerance = t;
+        }
+        if let Some(s) = args.bg_softness {
+            r.softness = s;
+        }
+        Some(r)
+    } else {
+        None
+    };
     let overrides = Overrides {
+        remove_background,
         quality: args.quality,
         max_kb: args.max_kb,
         lossless: args.lossless,

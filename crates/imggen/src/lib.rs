@@ -10,6 +10,17 @@ use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
 
+pub mod fetch;
+pub mod prompt;
+pub mod sizes;
+pub mod task_api;
+#[cfg(test)]
+mod testutil;
+pub mod upload;
+pub use prompt::{EnhanceResult, PromptContext, PromptEnhancer, DEFAULT_PROMPT_MODEL};
+pub use task_api::{PollConfig, TaskApiConfig, TaskApiProvider};
+pub use upload::{supports_upload, ImageUploader, UploadedImage};
+
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 #[derive(Debug, thiserror::Error)]
@@ -51,6 +62,10 @@ pub struct GeneratedImage {
     pub data: Vec<u8>,
     pub mime: String,
     pub seed: Option<u64>,
+    /// 服务端返回的原始图片地址
+    pub source_url: Option<String>,
+    /// 服务端改写后的提示词
+    pub revised_prompt: Option<String>,
 }
 
 pub trait ImageProvider: Send + Sync {
@@ -64,13 +79,14 @@ pub trait ImageProvider: Send + Sync {
 pub enum ProviderConfig {
     /// 本地占位实现，用于联调 UI 和流程
     Mock,
-    // 正式接口接入后在此新增，例如：
-    // Http { endpoint: String, api_key_env: String, model: Option<String> },
+    /// 异步任务式接口（hfsyapi.cn 兼容）：create → query 轮询 → 下载
+    TaskApi(TaskApiConfig),
 }
 
 pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn ImageProvider>> {
     match config {
         ProviderConfig::Mock => Ok(Box::new(MockProvider)),
+        ProviderConfig::TaskApi(c) => Ok(Box::new(TaskApiProvider::new(c.clone())?)),
     }
 }
 
@@ -107,7 +123,13 @@ impl ImageProvider for MockProvider {
                     let mut buf = std::io::Cursor::new(Vec::new());
                     img.write_to(&mut buf, image::ImageFormat::Png)
                         .map_err(|e| GenError::Provider(e.to_string()))?;
-                    Ok(GeneratedImage { data: buf.into_inner(), mime: "image/png".into(), seed: Some(base) })
+                    Ok(GeneratedImage {
+                        data: buf.into_inner(),
+                        mime: "image/png".into(),
+                        seed: Some(base),
+                        source_url: None,
+                        revised_prompt: None,
+                    })
                 })
                 .collect()
         })
