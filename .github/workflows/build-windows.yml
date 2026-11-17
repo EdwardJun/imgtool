@@ -38,6 +38,35 @@ jobs:
         working-directory: apps/desktop
         run: pnpm build
 
+      # 模拟用户场景：装好后 Agent 正在运行 MCP 服务（imgtool.exe 被占用），再覆盖安装
+      - name: Verify upgrade while MCP server is running
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1).FullName
+          $dir = Join-Path $env:RUNNER_TEMP 'ImgToolTest'
+          $exe = Join-Path $dir 'imgtool.exe'
+          $first = Start-Process $setup -ArgumentList '/S', "/D=$dir" -Wait -PassThru
+          if ($first.ExitCode -ne 0 -or -not (Test-Path $exe)) { throw "首次安装失败（退出码 $($first.ExitCode)）" }
+
+          $psi = New-Object System.Diagnostics.ProcessStartInfo $exe, 'mcp'
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardInput = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $mcp = [System.Diagnostics.Process]::Start($psi)
+          Start-Sleep -Seconds 2
+          if ($mcp.HasExited) { throw 'MCP 服务未能保持运行' }
+
+          $second = Start-Process $setup -ArgumentList '/S', "/D=$dir" -Wait -PassThru
+          Get-ChildItem $dir | Format-Table Name, Length
+          if ($second.ExitCode -ne 0) { throw "MCP 运行中覆盖安装失败（退出码 $($second.ExitCode)）" }
+          if (-not (Test-Path $exe)) { throw '覆盖安装后缺少 imgtool.exe' }
+          if (-not (Get-ChildItem (Join-Path $dir 'imgtool.exe.old*'))) { throw '未走到"文件被占用"的分支，测试无效' }
+          if ($mcp.HasExited) { throw '安装过程中 MCP 服务被中断' }
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw '新的 imgtool.exe 无法运行' }
+          $mcp.Kill()
+
       - uses: actions/upload-artifact@v4
         with:
           name: imgtool-windows-x64
