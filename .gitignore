@@ -8,3 +8,4 @@ apps/desktop/src-tauri/binaries/
 .imgtool/
 .DS_Store
 dist-windows/
+/dist/
