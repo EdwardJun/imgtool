@@ -11,17 +11,20 @@ const args = process.argv.slice(2);
 const release = args.includes('--release');
 const targetIdx = args.indexOf('--target');
 const hostTriple = execFileSync('rustc', ['-vV'], { encoding: 'utf8' }).match(/host: (\S+)/)[1];
-const triple = targetIdx >= 0 ? args[targetIdx + 1] : hostTriple;
+// `tauri build --target x` 运行 beforeBuildCommand 时会设置 TAURI_ENV_TARGET_TRIPLE
+const envTriple = process.env.TAURI_ENV_TARGET_TRIPLE;
+const explicit = targetIdx >= 0 ? args[targetIdx + 1] : envTriple && envTriple !== hostTriple ? envTriple : null;
+const triple = explicit ?? hostTriple;
 
 const cargoArgs = ['build', '-p', 'imgtool'];
 if (release) cargoArgs.push('--release');
-if (targetIdx >= 0) cargoArgs.push('--target', triple);
+if (explicit) cargoArgs.push('--target', triple);
 console.log(`[sidecar] cargo ${cargoArgs.join(' ')}`);
 execFileSync('cargo', cargoArgs, { cwd: root, stdio: 'inherit' });
 
 const ext = triple.includes('windows') ? '.exe' : '';
 const profileDir = release ? 'release' : 'debug';
-const built = targetIdx >= 0 ? join(root, 'target', triple, profileDir, `imgtool${ext}`) : join(root, 'target', profileDir, `imgtool${ext}`);
+const built = explicit ? join(root, 'target', triple, profileDir, `imgtool${ext}`) : join(root, 'target', profileDir, `imgtool${ext}`);
 const destDir = join(root, 'apps/desktop/src-tauri/binaries');
 mkdirSync(destDir, { recursive: true });
 const dest = join(destDir, `imgtool-${triple}${ext}`);
