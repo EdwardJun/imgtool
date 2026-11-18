@@ -35,7 +35,7 @@ export function CompressPanel({ value, current, onChange }: Props) {
   return (
     <div className="panel-section">
       <div className="panel-title">
-        压缩方式 <span className="panel-hint">不支持 svg、heic 格式</span>
+        压缩方式 <span className="panel-hint">SVG 会渲染为 PNG；不支持 heic</span>
       </div>
       <Radio.Group className="mode-group" value={value.mode} onChange={(e) => set({ mode: e.target.value })}>
         <Radio value="normal">

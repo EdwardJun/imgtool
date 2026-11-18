@@ -10,6 +10,7 @@ base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive"] }
 imgcore = { version = "0.1.0", path = "../imgcore", features = ["schema"] }
 imggen = { version = "0.1.0", path = "../imggen" }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 rayon = "1.12.0"
 rmcp = { version = "3.9.0", features = ["server", "transport-io", "macros"] }
 schemars = "1.2.3"
@@ -20,5 +21,4 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [dev-dependencies]
-image = { version = "0.25.10", default-features = false, features = ["png"] }
 tempfile = "3.27.0"

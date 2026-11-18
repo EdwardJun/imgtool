@@ -20,6 +20,9 @@ mozjpeg = "0.10.13"
 oxipng = { version = "10.2.1", default-features = false, features = ["parallel", "zopfli"] }
 png = "0.18.1"
 ravif = "0.13.0"
+# SVG 渲染（纯 Rust）。不加载外部文件，只允许内嵌 data: 图片
+resvg = { version = "0.50.0", default-features = false, features = ["text", "system-fonts", "raster-images"] }
+roxmltree = "0.21.2"
 schemars = { version = "1", optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.21"

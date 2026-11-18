@@ -20,16 +20,19 @@ use crate::gen_tasks::{is_remote, GenJob, Status, TaskStore};
 use crate::options::{parse_aspect, resolve, Overrides};
 use crate::workspace::{file_uri_to_path, validate_relative_dir, Workspace};
 
+mod svg_tools;
+
 const INSTRUCTIONS: &str = "imgtool：在当前项目内处理和生成图片（压缩、调整分辨率、裁剪、格式转换、去背景、拆分图标、AI 生成）。\n\
 - 路径可用相对项目根目录的路径；所有读写都限制在项目根目录内。\n\
 - 用户在对话里发来的图片：先用 import_image 存进项目（支持图片地址、base64、本机文件路径），再用返回的路径调用其他工具。\n\
 - 生成或重新生成设计稿：generate_image 提交任务（立即返回 task_id），再用 get_generation 查询，它会等待最多 wait_seconds 秒，完成后返回文件路径和预览图。参考图可传项目内路径。提示词请你根据用户的规则自己写清楚。\n\
+- 简单线性 / 面性图标、简单 logo：优先用 SVG，比 AI 绘图快、体积小、颜色和线宽精确。你可以自己写 SVG（viewBox 0 0 24 24，颜色用 currentColor）交给 render_svg 渲染成多尺寸 PNG；也可以用 generate_svg_icons 让对话模型一次生成一整套。写实、渐变、插画类图片仍用 generate_image。\n\
 - 想看某张图的样子：view_image 返回缩略图。\n\
 - 先用 get_project_context 了解根目录和项目预设（.imgtool.toml），用 scan_images 找出过大的图片。\n\
 - 默认不覆盖原图：压缩写到同目录 name.min.ext，转格式写到 name.<新扩展名>；目标已存在时报错，可传 on_conflict。\n\
 - 改动前可传 dry_run=true 预览体积和输出路径。\n\
 - 转换格式后，项目代码里对旧文件名的引用需要你自行更新。\n\
-- 支持读取 jpeg/png/webp/gif(首帧)/bmp/tiff/ico，输出 jpeg/png/webp/avif；不支持 svg/heic。";
+- 支持读取 jpeg/png/webp/gif(首帧)/bmp/tiff/ico/svg，输出 jpeg/png/webp/avif；SVG 输入在压缩/转换/裁剪时会渲染成位图（保持原格式时输出 PNG）；不支持 heic。";
 
 #[derive(Clone)]
 pub struct ImgToolServer {
@@ -38,7 +41,6 @@ pub struct ImgToolServer {
     cache: Arc<RwLock<Option<Workspace>>>,
     /// 后台图片生成任务
     tasks: TaskStore,
-    #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 
@@ -63,7 +65,7 @@ impl ImgToolServer {
             explicit_roots: Arc::new(explicit_roots),
             cache: Arc::new(RwLock::new(None)),
             tasks: TaskStore::default(),
-            tool_router: Self::tool_router(),
+            tool_router: Self::tool_router() + Self::svg_tool_router(),
         }
     }
 
@@ -1002,7 +1004,8 @@ impl ImgToolServer {
     }
 }
 
-#[tool_handler]
+// 默认会用 Self::tool_router()，这里改用合并了 SVG 工具的路由
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for ImgToolServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())

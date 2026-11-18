@@ -36,9 +36,13 @@ pub fn save_image(dir: &Path, stem_hint: Option<&str>, data: &[u8]) -> Result<(P
     if data.len() > MAX_IMPORT_BYTES {
         return Err(format!("图片超过 {}MB", MAX_IMPORT_BYTES / 1024 / 1024));
     }
-    let info = imgcore::probe(data).map_err(|_| "不是可识别的图片（支持 jpeg/png/webp/gif/bmp/tiff/ico）".to_string())?;
+    let mut info = imgcore::probe(data).map_err(|_| "不是可识别的图片（支持 jpeg/png/webp/gif/bmp/tiff/ico/svg）".to_string())?;
+    // SVG 要能真正解析（probe 只看文件头）
+    if info.format == "svg" && imgcore::svg::parse(data).is_err() {
+        return Err("SVG 无法解析，请检查内容是否完整".into());
+    }
     if !info.decodable {
-        return Err(format!("暂不支持 {} 格式（支持 jpeg/png/webp/gif/bmp/tiff/ico）", info.format));
+        return Err(format!("暂不支持 {} 格式（支持 jpeg/png/webp/gif/bmp/tiff/ico/svg）", info.format));
     }
     let ext = if info.format == "jpeg" { "jpg" } else { info.format.as_str() };
     let stem = stem_hint
@@ -52,7 +56,6 @@ pub fn save_image(dir: &Path, stem_hint: Option<&str>, data: &[u8]) -> Result<(P
     let target = resolve_conflict(dir.join(format!("{stem}.{ext}")), Path::new(""), &OutputPolicy::default(), ConflictPolicy::Rename)
         .map_err(|e| e.to_string())?;
     write_atomic(&target, data).map_err(|e| e.to_string())?;
-    let mut info = info;
     info.bytes = data.len() as u64;
     Ok((target, info))
 }
@@ -90,6 +93,10 @@ mod tests {
         let (p2, _) = save_image(dir.path(), Some("设计稿 v1.jpg"), &png()).unwrap();
         assert_eq!(p2, dir.path().join("设计稿_v1-1.png"), "重名自动加序号");
         assert!(save_image(dir.path(), None, b"not an image").is_err());
-        assert!(save_image(dir.path(), None, br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#).unwrap_err().contains("svg"));
+        // SVG 原样保存（渲染时才清洗），尺寸按默认渲染尺寸报告
+        let (p3, info) = save_image(dir.path(), Some("logo"), br#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"/>"#).unwrap();
+        assert_eq!((p3.extension().unwrap().to_str(), info.width), (Some("svg"), Some(20)));
+        assert!(save_image(dir.path(), None, br#"<svg xmlns="http://www.w3.org/2000/svg">"#).unwrap_err().contains("SVG"));
+        assert!(save_image(dir.path(), None, b"\x00\x01heic").is_err());
     }
 }

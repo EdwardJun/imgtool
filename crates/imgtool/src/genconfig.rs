@@ -16,6 +16,8 @@ pub struct GenConfig {
     pub api_key: String,
     /// 本地参考图是否需要先上传到图床（hfsyapi 只接受图片地址）
     pub upload_refs: bool,
+    /// 对话模型（SVG 图标生成用），空表示默认模型
+    pub prompt_model: String,
     /// 配置来源，便于排查
     pub source: String,
 }
@@ -25,6 +27,7 @@ pub struct GenConfig {
 struct DesktopSettings {
     base_url: String,
     api_key: String,
+    prompt_model: String,
 }
 
 /// 桌面端（Tauri app_config_dir）配置文件位置
@@ -67,5 +70,6 @@ pub fn load() -> Result<GenConfig, String> {
     } else {
         format!("桌面端设置 {}", file_path.map(|p| p.display().to_string()).unwrap_or_default())
     };
-    Ok(GenConfig { base_url: base_url.trim_end_matches('/').to_string(), api_key, upload_refs, source })
+    let prompt_model = env("IMGTOOL_PROMPT_MODEL").unwrap_or_else(|| file_settings.prompt_model.trim().to_string());
+    Ok(GenConfig { base_url: base_url.trim_end_matches('/').to_string(), api_key, upload_refs, prompt_model, source })
 }

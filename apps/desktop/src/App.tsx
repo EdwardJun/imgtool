@@ -46,6 +46,9 @@ import { ConvertPanel } from './panels/ConvertPanel';
 import { GeneratePanel } from './panels/GeneratePanel';
 import { OutputSection } from './panels/OutputSection';
 import { GenerateResults } from './components/GenerateResults';
+import { SvgIconResults } from './components/SvgIconResults';
+import { SvgIconPanel } from './panels/SvgIconPanel';
+import { useSvgIcons } from './generate/svgIcons';
 import { useApiSettings, useGenerator } from './generate/useGenerator';
 import { SettingsModal } from './components/SettingsModal';
 
@@ -79,6 +82,10 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
   const generator = useGenerator();
+  const svgIcons = useSvgIcons();
+  /** 图片生成页的模式：AI 绘图 / SVG 图标 */
+  const [genMode, setGenMode] = useState<'image' | 'svg'>(() => (localStorage.getItem('imgtool.genMode') === 'svg' ? 'svg' : 'image'));
+  useEffect(() => localStorage.setItem('imgtool.genMode', genMode), [genMode]);
   const apiSettings = useApiSettings();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const previewSeq = useRef(0);
@@ -349,7 +356,7 @@ export default function App() {
         <button className="dropzone" onClick={pickFiles}>
           <AppstoreOutlined className="dropzone-icon" />
           <div className="dropzone-title">点击添加或拖入图片 / 文件夹</div>
-          <div className="dropzone-desc">支持 JPG、PNG、WebP、GIF、BMP、TIFF、ICO</div>
+          <div className="dropzone-desc">支持 JPG、PNG、WebP、GIF、BMP、TIFF、ICO、SVG</div>
         </button>
       );
     }
@@ -403,7 +410,7 @@ export default function App() {
     <div className="app">
       <header className="titlebar">
         <div className="brand">
-          <img src="/logo.svg" alt="" className="brand-logo" />
+          <img src="/logo.png" alt="" className="brand-logo" />
           <span>图片工具</span>
         </div>
         <nav className="tool-tabs" aria-label="功能">
@@ -423,7 +430,20 @@ export default function App() {
 
       <main className="workspace">
         <section className={`stage-area ${dragOver ? 'drag-over' : ''}`}>
-          {tool === 'generate' ? (
+          {tool === 'generate' && genMode === 'svg' ? (
+            <SvgIconResults
+              batches={svgIcons.batches}
+              onRerender={svgIcons.rerender}
+              onRemove={svgIcons.remove}
+              onClear={svgIcons.clear}
+              onUse={async (paths) => {
+                await addPaths(paths);
+                setTool('compress');
+                setView('preview');
+                message.success(`已加入 ${paths.length} 张到图片列表`);
+              }}
+            />
+          ) : tool === 'generate' ? (
             <GenerateResults
               results={generator.results}
               onRemove={generator.remove}
@@ -602,6 +622,36 @@ export default function App() {
             {tool === 'convert' && <ConvertPanel value={settings.convert} onChange={(convert) => setSettings((s) => ({ ...s, convert }))} />}
             {tool === 'removebg' && <RemoveBgPanel value={settings.removeBg} current={item} onChange={(removeBg) => setSettings((s) => ({ ...s, removeBg }))} />}
             {tool === 'generate' && (
+              <Segmented
+                block
+                className="gen-mode"
+                value={genMode}
+                onChange={(v) => setGenMode(v as 'image' | 'svg')}
+                options={[
+                  { label: 'AI 绘图', value: 'image' },
+                  { label: 'SVG 图标', value: 'svg' },
+                ]}
+              />
+            )}
+            {tool === 'generate' && genMode === 'svg' && (
+              <SvgIconPanel
+                api={apiSettings.value}
+                onOpenSettings={() => setSettingsOpen(true)}
+                running={svgIcons.running}
+                onGenerate={async (params) => {
+                  try {
+                    const set = await svgIcons.generate(params);
+                    const ok = set.icons.filter((i) => i.files?.length).length;
+                    const bad = set.icons.length - ok + set.missing.length;
+                    if (bad) message.warning(`生成 ${ok} 个图标，${bad} 个失败`);
+                    else message.success(`已生成 ${ok} 个图标`);
+                  } catch (e) {
+                    message.error(String(e));
+                  }
+                }}
+              />
+            )}
+            {tool === 'generate' && genMode === 'image' && (
               <GeneratePanel
                 running={generator.running}
                 onGenerate={generator.generate}

@@ -21,7 +21,7 @@ import type {
   ProcessOptions,
 } from './types';
 
-export const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tif', 'tiff', 'ico'];
+export const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tif', 'tiff', 'ico', 'svg'];
 
 type LoadResult = { Ok: LoadedImage } | { Err: string };
 

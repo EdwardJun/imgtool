@@ -129,12 +129,38 @@ fn keeps_original_when_not_smaller() {
 }
 
 #[test]
-fn rejects_svg_and_reports_info() {
-    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>"#;
-    assert!(matches!(process(svg, &ProcessOptions::default()), Err(Error::Unsupported(_))));
+fn svg_input_renders_to_png_and_reports_info() {
+    let svg = br##"<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#2050e0"/></svg>"##;
     let info = probe(svg).unwrap();
     assert_eq!(info.format, "svg");
-    assert!(!info.decodable);
+    assert!(info.decodable);
+    assert_eq!((info.width, info.height), (Some(40), Some(20)));
+
+    // 保持原格式 → PNG，按声明尺寸
+    let out = process(svg, &ProcessOptions::default()).unwrap();
+    assert_eq!(out.report.format, OutputFormat::Png);
+    assert_eq!((out.report.width, out.report.height), (40, 20));
+    assert_eq!(out.report.original_format, "svg");
+    assert!(!out.report.kept_original);
+
+    // 放大时按目标尺寸渲染：边缘依然锐利（没有插值出来的中间色）
+    let big = process(
+        svg,
+        &ProcessOptions { resize: Some(ResizeSpec { width: Some(400), height: None, fit: ResizeFit::Contain, without_enlargement: false }), ..Default::default() },
+    )
+    .unwrap();
+    assert_eq!((big.report.width, big.report.height), (400, 200));
+    let img = image::load_from_memory(&big.data).unwrap().to_rgba8();
+    assert!(img.pixels().all(|p| p.0 == [0x20, 0x50, 0xe0, 255]));
+
+    // 没有声明尺寸：长边 512
+    let icon = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 12"><rect width="24" height="12"/></svg>"#;
+    let out = process(icon, &ProcessOptions { format: Some(OutputFormat::Webp), ..Default::default() }).unwrap();
+    assert_eq!((out.report.width, out.report.height), (512, 256));
+
+    // 不是合法 SVG
+    assert!(matches!(process(b"<svg", &ProcessOptions::default()), Err(Error::Decode(_))));
 
     let png = encode_as(&sample_image(64, 32, false), ImageFormat::Png);
     let info = probe(&png).unwrap();

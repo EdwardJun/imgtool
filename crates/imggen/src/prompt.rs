@@ -4,8 +4,8 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 
+use crate::chat::ChatClient;
 use crate::{GenError, Result};
 
 /// 默认使用的对话模型。2026-11-16 在 hfsyapi 与 gpt-6.1-sol 对比 3 个场景：质量相当，
@@ -106,34 +106,12 @@ pub fn clean_output(text: &str) -> String {
 }
 
 pub struct PromptEnhancer {
-    base_url: String,
-    api_key: String,
-    model: String,
-    client: reqwest::Client,
+    chat: ChatClient,
 }
 
 impl PromptEnhancer {
     pub fn new(base_url: &str, api_key: &str, model: &str) -> Result<Self> {
-        let base_url = base_url.trim().trim_end_matches('/').to_string();
-        if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
-            return Err(GenError::InvalidRequest("接口地址需以 http:// 或 https:// 开头".into()));
-        }
-        let api_key = api_key.trim().to_string();
-        if api_key.is_empty() {
-            return Err(GenError::InvalidRequest("请先在「设置」里填写 API Key".into()));
-        }
-        let model = match model.trim() {
-            "" => DEFAULT_PROMPT_MODEL.to_string(),
-            m => m.to_string(),
-        };
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(20))
-            .timeout(Duration::from_secs(90))
-            .user_agent(concat!("imgtool/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|e| GenError::Provider(format!("HTTP 客户端初始化失败: {e}")))?;
-        Ok(Self { base_url, api_key, model, client })
+        Ok(Self { chat: ChatClient::new(base_url, api_key, model, DEFAULT_PROMPT_MODEL, Duration::from_secs(90))? })
     }
 
     pub async fn enhance(&self, prompt: &str, ctx: &PromptContext) -> Result<EnhanceResult> {
@@ -141,46 +119,12 @@ impl PromptEnhancer {
         if prompt.is_empty() {
             return Err(GenError::InvalidRequest("请先输入你想要的画面，再点优化".into()));
         }
-        let body = json!({
-            "model": self.model,
-            "messages": [
-                { "role": "system", "content": SYSTEM_PROMPT },
-                { "role": "user", "content": build_user_message(prompt, ctx) },
-            ],
-            "temperature": 0.7,
-            "max_tokens": 1500,
-        });
-        let resp = self
-            .client
-            .post(format!("{}/v1/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| GenError::Provider(format!("优化提示词失败: {}", if e.is_timeout() { "请求超时".to_string() } else { e.to_string() })))?;
-        let status = resp.status();
-        let text = resp.text().await.map_err(|e| GenError::Provider(format!("优化提示词失败: {e}")))?;
-        let v: Value = serde_json::from_str(&text)
-            .map_err(|_| GenError::Provider(format!("优化提示词失败: HTTP {status} {}", text.chars().take(200).collect::<String>())))?;
-        if !status.is_success() {
-            let msg = v
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .or_else(|| v.get("message").and_then(Value::as_str))
-                .unwrap_or("服务端返回错误");
-            let hint = match status.as_u16() {
-                401 => "（请检查 API Key）",
-                404 => "（该接口可能不支持对话模型，或模型名不存在）",
-                _ => "",
-            };
-            return Err(GenError::Provider(format!("优化提示词失败: HTTP {status} {msg}{hint}")));
-        }
-        let content = v.pointer("/choices/0/message/content").and_then(Value::as_str).unwrap_or("");
-        let cleaned = clean_output(content);
+        let reply = self.chat.complete("优化提示词", SYSTEM_PROMPT, &build_user_message(prompt, ctx), 0.7, 1500).await?;
+        let cleaned = clean_output(&reply.content);
         if cleaned.is_empty() {
             return Err(GenError::Provider("优化提示词失败: 模型没有返回内容，可换一个对话模型重试".into()));
         }
-        Ok(EnhanceResult { prompt: cleaned, model: self.model.clone(), total_tokens: v.pointer("/usage/total_tokens").and_then(Value::as_u64) })
+        Ok(EnhanceResult { prompt: cleaned, model: reply.model, total_tokens: reply.total_tokens })
     }
 }
 

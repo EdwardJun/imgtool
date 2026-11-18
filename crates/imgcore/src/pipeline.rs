@@ -1,6 +1,6 @@
 use image::{imageops::FilterType, DynamicImage};
 
-use crate::decode::decode;
+use crate::decode::decode_with_hint;
 use crate::encode::{encode, EncodeParams, Pixels};
 use crate::error::{Error, Result};
 use crate::types::*;
@@ -11,7 +11,9 @@ const MIN_DIMENSION: u32 = 8;
 
 /// 处理单张图片：解码 → 裁剪 → 缩放 → 编码（按压缩方式）
 pub fn process(input: &[u8], opts: &ProcessOptions) -> Result<ProcessOutput> {
-    let decoded = decode(input)?;
+    // SVG 需要放大时直接按目标尺寸渲染，保持矢量清晰
+    let hint = opts.resize.as_ref().and_then(|r| r.width.max(r.height));
+    let decoded = decode_with_hint(input, hint)?;
     let source_name = decoded.format_name;
     let mut warnings = Vec::new();
     if source_name == "gif" {
@@ -210,7 +212,7 @@ fn search_target_size(
         if nw < MIN_DIMENSION || nh < MIN_DIMENSION {
             break;
         }
-        img = img.resize_exact(nw, nh, FilterType::Lanczos3);
+        img = crate::resize::resize_exact(&img, nw, nh, FilterType::Lanczos3);
     }
 
     let result = smallest.ok_or_else(|| Error::Encode("目标体积搜索失败".into()))?;
@@ -277,7 +279,7 @@ pub fn apply_resize(img: DynamicImage, spec: &ResizeSpec) -> Result<DynamicImage
                 if spec.without_enlargement && tw as f64 >= w && th as f64 >= h {
                     return Ok(img);
                 }
-                Ok(img.resize_exact(tw, th, filter))
+                Ok(crate::resize::resize_exact(&img, tw, th, filter))
             }
             ResizeFit::Cover => {
                 let scale = (tw as f64 / w).max(th as f64 / h);
@@ -300,5 +302,5 @@ fn scale_by(img: DynamicImage, scale: f64, without_enlargement: bool, filter: Fi
     }
     let nw = ((img.width() as f64) * scale).round().max(1.0) as u32;
     let nh = ((img.height() as f64) * scale).round().max(1.0) as u32;
-    Ok(img.resize_exact(nw, nh, filter))
+    Ok(crate::resize::resize_exact(&img, nw, nh, filter))
 }

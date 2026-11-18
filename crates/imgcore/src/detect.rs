@@ -393,7 +393,7 @@ pub fn render_square(img: &DynamicImage, region: &Region, opts: &SquareOptions) 
     let scale = inner / cw.max(ch) as f32;
     let tw = ((cw as f32 * scale).round() as u32).clamp(1, size);
     let th = ((ch as f32 * scale).round() as u32).clamp(1, size);
-    let resized = crop.resize_exact(tw, th, FilterType::Lanczos3).to_rgba8();
+    let resized = crate::resize::resize_exact(&crop, tw, th, FilterType::Lanczos3).to_rgba8();
 
     let fill = match opts.background {
         Some([r, g, b]) => image::Rgba([r, g, b, 255]),

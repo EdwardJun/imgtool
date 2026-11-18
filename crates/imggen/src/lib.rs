@@ -10,14 +10,17 @@ use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
 
+pub mod chat;
 pub mod fetch;
 pub mod prompt;
 pub mod sizes;
+pub mod svg_icons;
 pub mod task_api;
 #[cfg(test)]
 mod testutil;
 pub mod upload;
 pub use prompt::{EnhanceResult, PromptContext, PromptEnhancer, DEFAULT_PROMPT_MODEL};
+pub use svg_icons::{GeneratedIcon, IconCorner, IconSetResult, IconSpec, IconStyle, IconVariant, SvgIconGenerator};
 pub use task_api::{PollConfig, TaskApiConfig, TaskApiProvider};
 pub use upload::{supports_upload, ImageUploader, UploadedImage};
 

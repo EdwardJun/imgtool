@@ -8,6 +8,8 @@ pub mod error;
 pub mod pipeline;
 pub mod postprocess;
 pub mod project;
+pub mod resize;
+pub mod svg;
 pub mod types;
 
 pub use background::{BackgroundRemoval, RemovalStats};

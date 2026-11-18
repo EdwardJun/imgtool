@@ -279,6 +279,31 @@ export async function install() {
           return a.items.map((it: { path: string; regions: unknown[] | null }) => ({
             Ok: { input: it.path, out_dir: it.path.replace(/\.\w+$/, '_icons'), size: a.square.size, mode: it.regions ? 'manual' : 'alpha', files: (it.regions ?? [1, 2, 3]).map((_, i) => ({ path: `icon_${i + 1}.png`, name: `icon_${i + 1}`, bytes: 1000, written: true })) },
           }));
+        case 'generate_svg_icons':
+        case 'render_svg_set': {
+          const p = a.params;
+          if (cmd === 'generate_svg_icons') await new Promise((r) => setTimeout(r, 1500));
+          const shapes = ['<path d="M3 10l9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/>', '<circle cx="12" cy="12" r="9"/><path d="m15 9-2 4-4 2 2-4z"/>', '<circle cx="9" cy="20" r="1"/><circle cx="18" cy="20" r="1"/><path d="M2 3h3l3 12h11l2-8H6"/>', '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>'];
+          const list: { label: string; name: string; svg: string }[] =
+            cmd === 'render_svg_set'
+              ? p.icons
+              : p.icons.map((label: string, i: number) => ({
+                  label: label.split(/[:：]/)[0],
+                  name: /^[\w -]+$/.test(label) ? label : `icon-${String(i + 1).padStart(2, '0')}`,
+                  svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${p.style.stroke_width}" stroke-linecap="round" stroke-linejoin="round">${shapes[i % shapes.length]}</svg>`,
+                }));
+          const icons = list.map((it) => {
+            const colored = it.svg.replace('<svg ', `<svg color="${p.color}" `);
+            const url = URL.createObjectURL(new Blob([colored], { type: 'image/svg+xml' }));
+            return {
+              label: it.label,
+              name: it.name,
+              svg: colored,
+              files: [{ path: url, format: 'svg', bytes: colored.length, written: true }, ...p.sizes.map((s: number) => ({ path: url, format: p.format, size: s, bytes: 200 + s * 4, written: true }))],
+            };
+          });
+          return { model: cmd === 'generate_svg_icons' ? p.model || 'deepseek-v4.1-flash' : null, total_tokens: 1400, elapsed_ms: 1500, out_dir: '/mock/svg-icons', icons, missing: [] };
+        }
         case 'plugin:dialog|open':
           return null;
         default:

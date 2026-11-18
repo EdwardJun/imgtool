@@ -122,7 +122,7 @@ writeFileSync(join(tmpdir(), 'outside.png'), makePng(8, 8));
 // ---- JSON-RPC over stdio ----
 // 不在项目目录启动，验证根目录确实来自客户端 Roots
 // ---- 假的 hfsyapi：图床上传 / 创建任务 / 查询任务 / 下载结果 ----
-const fake = { uploads: 0, creates: [], queries: 0 };
+const fake = { uploads: 0, creates: [], queries: 0, chats: [] };
 const fakeServer = http.createServer((req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
@@ -141,6 +141,13 @@ const fakeServer = http.createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/v1/files/image-upload') {
       fake.uploads++;
       return json(200, { success: true, message: '', data: { url: `${base}/files/ref.png?Expires=4102444800`, size: 1 } });
+    }
+    if (req.method === 'POST' && req.url === '/v1/chat/completions') {
+      fake.chats.push(JSON.parse(body));
+      // 模型返回 2 个图标（第 2 个带 script，应被清洗），故意缺第 3 个
+      const content = '```svg\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" data-index="1" data-name="home"><path d="M3 10l9-7 9 7v10H3z"/></svg>\n' +
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" data-index="2" data-name="shopping-cart"><circle cx="12" cy="12" r="8"/><script>alert(1)</script></svg>\n```';
+      return json(200, { choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }], usage: { total_tokens: 321 } });
     }
     if (req.method === 'POST' && req.url === '/v1/image/create') {
       fake.creates.push(JSON.parse(body));
@@ -214,7 +221,7 @@ try {
   const tools = await request('tools/list', {});
   const names = tools.result.tools.map((t) => t.name).sort();
   console.log('      tools:', names.join(', '));
-  check(names.length === 14, '暴露 14 个工具');
+  check(names.length === 16, '暴露 16 个工具');
 
   const ctx = await call('get_project_context');
   check(ctx.data.roots[0] === project, `根目录来自客户端 Roots: ${ctx.data.roots[0]}`);
@@ -308,6 +315,52 @@ try {
   check(badRef.isError, '拒绝项目外的参考图路径');
   const noTask = await call('get_generation', { task_id: 'gen_nope', wait_seconds: 0 });
   check(noTask.isError, '查询不存在的任务时报错');
+
+  // ---- SVG：输入渲染、render_svg、generate_svg_icons ----
+  const ICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" onload="x()"><path d="M4 12h16M12 4v16"/></svg>';
+  writeFileSync(join(project, 'public/img/plus.svg'), ICON);
+  const scan2 = await call('scan_images', {});
+  check(scan2.data.images.some((i) => i.path === 'public/img/plus.svg'), 'scan_images 列出 svg');
+  const svgInfo = await call('image_info', { paths: ['public/img/plus.svg'] });
+  check(svgInfo.data[0].info.format === 'svg' && svgInfo.data[0].info.decodable && svgInfo.data[0].info.width === 512, `image_info 识别 svg（无声明尺寸按 512）`);
+  const svgComp = await call('compress_images', { paths: ['public/img/plus.svg'] });
+  check(!svgComp.isError && existsSync(join(project, 'public/img/plus.png')) && svgComp.data.items[0].width === 512, `压缩 svg 保持原格式 → png: ${svgComp.summary}`);
+  const svgConv = await call('compress_images', { paths: ['public/img/plus.svg'], format: 'webp', max_width: 96 });
+  check(!svgConv.isError && svgConv.data.items[0].width === 96 && existsSync(join(project, 'public/img/plus.webp')), `svg 转 webp 并限制宽度: ${svgConv.summary}`);
+  const svgView = await request('tools/call', { name: 'view_image', arguments: { path: 'public/img/plus.svg', max_size: 64 } });
+  check(svgView.result.content.some((c) => c.type === 'image'), 'view_image 支持 svg');
+
+  const rs = await request('tools/call', { name: 'render_svg', arguments: { svg: ICON, name: 'plus', sizes: [24, 48], color: '#4F46E5' } });
+  const rsJson = JSON.parse(rs.result.content[1].text);
+  const rsFiles = rsJson.files.map((f) => f.path);
+  check(!rs.result.isError && rsFiles.join(',') === '.imgtool/icons/plus.svg,.imgtool/icons/plus-24.png,.imgtool/icons/plus-48.png', `render_svg 输出 svg + 多尺寸: ${rsFiles}`);
+  const savedSvg = readFileSync(join(project, '.imgtool/icons/plus.svg'), 'utf8');
+  check(!savedSvg.includes('onload') && savedSvg.includes('color="#4F46E5"'), 'render_svg 清洗并写入颜色');
+  check(rs.result.content.some((c) => c.type === 'image') && rs.result.content[0].text.includes('onload'), 'render_svg 返回预览并提示被移除的内容');
+  const rsPath = await call('render_svg', { path: 'public/img/plus.svg', sizes: [32], format: 'webp' });
+  check(!rsPath.isError && rsPath.data.files.length === 1 && rsPath.data.files[0].path === 'public/img/plus-32.webp', `render_svg(path) 默认写到同目录且不另存 svg: ${rsPath.summary}`);
+  const rsBad = await call('render_svg', { svg: ICON, color: 'red" onload="x' });
+  check(rsBad.isError, '拒绝不合法的颜色');
+  const rsBoth = await call('render_svg', { svg: ICON, path: 'public/img/plus.svg' });
+  check(rsBoth.isError, 'svg 与 path 同时给出时报错');
+  const rsOut = await call('render_svg', { svg: ICON, out_dir: '../escape' });
+  check(rsOut.isError, 'render_svg 拒绝项目外输出目录');
+
+  const gi = await request('tools/call', { name: 'generate_svg_icons', arguments: { icons: ['home', '购物车：带两个轮子', '我的'], color: '#E11D48', sizes: [64] } });
+  const giJson = JSON.parse(gi.result.content[1].text);
+  check(!gi.result.isError && giJson.icons.length === 2 && giJson.failed.length === 1 && giJson.failed[0].startsWith('我的'), `generate_svg_icons 成功 2 个、报告缺失 1 个: ${gi.result.content[0].text}`);
+  check(existsSync(join(project, '.imgtool/icons/home.svg')) && existsSync(join(project, '.imgtool/icons/shopping-cart-64.png')), '按名称 / 模型英文短名命名文件');
+  check(!readFileSync(join(project, '.imgtool/icons/shopping-cart.svg'), 'utf8').includes('script'), '生成的 svg 经过清洗');
+  check(gi.result.content.some((c) => c.type === 'image'), 'generate_svg_icons 返回总览预览图');
+  const chatReq = fake.chats.at(-1);
+  check(chatReq.model === 'deepseek-v4.1-flash' && chatReq.thinking?.type === 'disabled' && chatReq.messages[1].content.includes('2. 购物车（带两个轮子）'), '请求带上清单与说明，DeepSeek 关闭思考');
+  const giAgain = await call('generate_svg_icons', { icons: ['home'], sizes: [64] });
+  check(!giAgain.isError && giAgain.data.icons[0].files[0].path === '.imgtool/icons/home-1.svg', '重复生成默认自动加序号');
+  const giTooMany = await call('generate_svg_icons', { icons: Array(13).fill('a') });
+  check(giTooMany.isError, '一次最多 12 个');
+
+  const impSvg = await call('import_image', { base64: Buffer.from(ICON).toString('base64'), filename: 'logo' });
+  check(!impSvg.isError && impSvg.data.path === '.imgtool/inbox/logo.svg', `import_image 支持 svg: ${impSvg.summary}`);
 
   const info = await call('image_info', { paths: ['public/img/hero.webp'] });
   check(info.data[0].info.format === 'webp', 'image_info 识别格式');

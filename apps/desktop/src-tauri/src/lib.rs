@@ -3,6 +3,7 @@ mod generate;
 mod mcp_config;
 mod references;
 mod smart_crop;
+mod svg_icons;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -30,6 +31,8 @@ pub fn run() {
             smart_crop::detect_regions,
             smart_crop::export_regions,
             references::upload_reference,
+            svg_icons::generate_svg_icons,
+            svg_icons::render_svg_set,
         ])
         .run(tauri::generate_context!())
         .expect("启动应用失败");
