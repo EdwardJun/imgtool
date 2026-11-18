@@ -1,7 +1,8 @@
 name: build
 
 # Windows（NSIS + MSI）和 macOS（Apple Silicon + Intel 的 DMG）安装包。
-# 手动触发，或推送 v* 标签时自动打包
+# 手动触发，或推送 v* 标签时自动打包。
+# 文件名保留 build-windows.yml：手动触发要求默认分支上已有同名文件
 on:
   workflow_dispatch:
   push:
