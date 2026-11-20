@@ -60,8 +60,9 @@ pub fn finalize(data: Vec<u8>, format: OutputFormat, remove_background: Option<B
         }
     }
     let resize = final_size.map(|f| ResizeSpec { width: Some(f.width), height: Some(f.height), fit: f.fit, without_enlargement: false });
-    // JPEG 不支持透明，去背景时改存 PNG
-    let format = if remove_background.is_some() && !format.supports_alpha() { OutputFormat::Png } else { format };
+    // JPEG 不支持透明，去背景（未更换底色）时改存 PNG
+    let transparent = remove_background.as_ref().is_some_and(|r| r.fill.is_none());
+    let format = if transparent && !format.supports_alpha() { OutputFormat::Png } else { format };
     let mode = if format == OutputFormat::Png { CompressMode::Lossless } else { CompressMode::Quality { quality: 92 } };
     let out = crate::process(
         &data,

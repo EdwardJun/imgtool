@@ -4,6 +4,7 @@ mod batch;
 mod gen_tasks;
 mod genconfig;
 mod intake;
+mod matting;
 mod mcp;
 mod options;
 mod workspace;
@@ -17,7 +18,7 @@ use imgcore::project::{scan, ConflictPolicy, OutputMode, ProjectPreset, ScanOpti
 use imgcore::{OutputFormat, ResizeFit};
 
 use crate::batch::{expand_inputs, human_bytes, run_batch};
-use crate::options::{parse_aspect, parse_color, parse_rect, resolve, Overrides};
+use crate::options::{id_photo_resize, parse_aspect, parse_color, parse_fill, parse_rect, resolve, Overrides};
 
 #[derive(Parser)]
 #[command(name = "imgtool", version, about = "图片压缩 / 裁剪 / 格式转换，支持作为 MCP Server 供 Agent 调用")]
@@ -86,6 +87,12 @@ impl From<FormatArg> for OutputFormat {
             FormatArg::Avif => OutputFormat::Avif,
         }
     }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum MethodArg {
+    Color,
+    Ai,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -183,9 +190,21 @@ struct ProcessArgs {
     /// 按矩形裁剪：x,y,w,h
     #[arg(long)]
     rect: Option<String>,
-    /// 去除纯色背景（输出 jpg 时会改为 png 以保留透明）
+    /// 去除纯色背景（输出 jpg 时会改为 png 以保留透明；配合 --bg-fill 更换底色则可输出 jpg）
     #[arg(long)]
     remove_bg: bool,
+    /// 更换底色：white / blue / red（证件照白、蓝、红底）或 #rrggbb，输出不透明图片
+    #[arg(long, requires = "remove_bg")]
+    bg_fill: Option<String>,
+    /// 证件照尺寸：1inch / 2inch / small-1inch / small-2inch 或 宽x高；按主体自动构图后缩放到精确像素
+    #[arg(long, requires = "remove_bg", conflicts_with_all = ["aspect", "rect", "width", "height", "trim"])]
+    photo_size: Option<String>,
+    /// 人像模式 true/false：保护被主体包住的同色衣物（如白衬衫）；默认在 --bg-fill / --photo-size 时开启
+    #[arg(long, requires = "remove_bg")]
+    bg_portrait: Option<bool>,
+    /// 抠图方式：color 按颜色（默认）/ ai 用 MODNet 人像抠图模型（首次使用自动下载约 25MB）
+    #[arg(long, requires = "remove_bg", value_enum)]
+    bg_method: Option<MethodArg>,
     /// 背景色，如 #ffffff；不传则自动识别边缘颜色
     #[arg(long, requires = "remove_bg")]
     bg_color: Option<String>,
@@ -360,14 +379,32 @@ fn run_process(args: ProcessArgs, require_format: bool) -> anyhow::Result<()> {
         (_, Some(r)) => Some(parse_rect(r).map_err(anyhow::Error::msg)?),
         _ => None,
     };
+    let photo_size = args.photo_size.as_deref().map(imgcore::portrait::parse_photo_size).transpose().map_err(anyhow::Error::msg)?;
+    let crop = match photo_size {
+        Some((width, height)) => Some(imgcore::CropSpec::Subject { width, height }),
+        None => crop,
+    };
     let remove_background = if args.remove_bg {
         let mut r = imgcore::BackgroundRemoval {
             color: args.bg_color.as_deref().map(parse_color).transpose().map_err(anyhow::Error::msg)?,
             contiguous: !args.bg_global,
             trim: args.trim.is_some(),
             trim_padding: args.trim.unwrap_or(0),
+            fill: args.bg_fill.as_deref().map(parse_fill).transpose().map_err(anyhow::Error::msg)?,
+            portrait: args.bg_portrait.unwrap_or(args.bg_fill.is_some() || photo_size.is_some()),
+            method: match args.bg_method {
+                Some(MethodArg::Ai) => imgcore::RemovalMethod::Ai,
+                _ => imgcore::RemovalMethod::Color,
+            },
             ..Default::default()
         };
+        if r.method == imgcore::RemovalMethod::Ai {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+            if !imgcore::matting::is_available() && !imggen::models::is_downloaded(&imggen::models::MODNET) {
+                eprintln!("首次使用 AI 抠图，正在下载模型（约 25MB）…");
+            }
+            rt.block_on(matting::ensure_model()).map_err(anyhow::Error::msg)?;
+        }
         if let Some(t) = args.bg_tolerance {
             r.tolerance = t;
         }
@@ -392,6 +429,9 @@ fn run_process(args: ProcessArgs, require_format: bool) -> anyhow::Result<()> {
         }),
         format: args.format.map(Into::into),
         crop,
+        // 证件照必须是精确像素：缩放到目标尺寸，限制体积时也不缩小分辨率
+        resize: photo_size.map(|(w, h)| id_photo_resize(w, h)),
+        keep_dimensions: photo_size.is_some(),
         output_mode: args.mode.map(|m| match m {
             ModeArg::Suffix => OutputMode::Suffix,
             ModeArg::Overwrite => OutputMode::Overwrite,

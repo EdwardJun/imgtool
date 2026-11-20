@@ -3,6 +3,7 @@ import type {
   BackgroundRemoval,
   DetectOptions,
   ImageItem,
+  PhotoSizeKey,
   ProcessOptions,
   Rect,
   RemoveBgSettings,
@@ -22,7 +23,42 @@ export const defaultRemoveBg: RemoveBgSettings = {
   trim: false,
   trimPadding: 0,
   format: 'png',
+  mode: 'transparent',
+  fill: '#438edb',
+  portrait: true,
+  method: 'color',
+  // 更换底色大多是人像，默认用 AI 抠图
+  fillMethod: 'ai',
+  photoSize: 'original',
+  customWidth: null,
+  customHeight: null,
+  limitSize: false,
+  maxKb: 50,
+  fillFormat: 'jpeg',
 };
+
+/** 证件照尺寸（与 imgcore::portrait::PHOTO_SIZES 保持一致） */
+export const PHOTO_SIZES: { key: Exclude<PhotoSizeKey, 'original' | 'custom'>; label: string; width: number; height: number }[] = [
+  { key: '1inch', label: '一寸', width: 295, height: 413 },
+  { key: '2inch', label: '二寸', width: 413, height: 579 },
+  { key: 'small-1inch', label: '小一寸', width: 260, height: 378 },
+  { key: 'small-2inch', label: '小二寸', width: 413, height: 531 },
+];
+
+/** 常用证件照底色（与 imgcore::portrait::FILL_COLORS 保持一致） */
+export const FILL_PRESETS: { label: string; color: string }[] = [
+  { label: '白', color: '#ffffff' },
+  { label: '蓝', color: '#438edb' },
+  { label: '红', color: '#ff0000' },
+];
+
+/** 当前选择的证件照输出尺寸；原尺寸或自定义未填完整时为 null */
+export function photoSizeOf(r: RemoveBgSettings): { width: number; height: number } | null {
+  if (r.photoSize === 'custom') return r.customWidth && r.customHeight ? { width: r.customWidth, height: r.customHeight } : null;
+  return PHOTO_SIZES.find((p) => p.key === r.photoSize) ?? null;
+}
+
+export const frameKeyOf = (size: { width: number; height: number }) => `${size.width}x${size.height}`;
 
 const REMOVE_BG_KEY = 'imgtool.removeBg';
 
@@ -58,6 +94,7 @@ export function toRemoval(s: RemoveBgSettings): BackgroundRemoval {
     decontaminate: s.decontaminate,
     trim: s.trim,
     trim_padding: s.trim ? s.trimPadding : 0,
+    method: s.method,
   };
 }
 
@@ -152,6 +189,25 @@ function compressResize(settings: Settings, item: ImageItem): ResizeSpec | null 
 }
 
 export function buildOptions(tool: Tool, settings: Settings, item: ImageItem): ProcessOptions {
+  if (tool === 'removebg' && settings.removeBg.mode === 'replace') {
+    const r = settings.removeBg;
+    const size = photoSizeOf(r);
+    const frame = size && item.frame && item.frameKey === frameKeyOf(size) ? item.frame : null;
+    return {
+      // 证件照按主体构图，不需要先裁掉透明空白
+      remove_background: { ...toRemoval(r), trim: false, trim_padding: 0, fill: hexToRgb(r.fill), portrait: r.portrait, method: r.fillMethod },
+      crop: size ? (frame ? { type: 'rect', ...frame } : { type: 'subject', width: size.width, height: size.height }) : null,
+      resize: size ? { width: size.width, height: size.height, fit: 'cover', without_enlargement: false } : null,
+      format: r.fillFormat,
+      // 限制体积时只降质量、不缩小分辨率，保证证件照像素尺寸
+      mode: r.limitSize
+        ? { type: 'target_size', max_bytes: Math.max(1, Math.round(r.maxKb * 1024)), keep_dimensions: true }
+        : r.fillFormat === 'png'
+          ? { type: 'lossless' }
+          : { type: 'quality', quality: 92 },
+      keep_original_if_larger: false,
+    };
+  }
   if (tool === 'removebg') {
     const r = settings.removeBg;
     return {

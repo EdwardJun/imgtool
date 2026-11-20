@@ -6,7 +6,7 @@ export const FORMAT_LABEL: Record<OutputFormat, string> = { jpeg: 'JPG', png: 'P
 
 export type CompressMode =
   | { type: 'quality'; quality: number }
-  | { type: 'target_size'; max_bytes: number; min_quality?: number | null }
+  | { type: 'target_size'; max_bytes: number; min_quality?: number | null; keep_dimensions?: boolean }
   | { type: 'lossless' };
 
 export type ResizeFit = 'contain' | 'cover' | 'fill';
@@ -20,7 +20,9 @@ export interface ResizeSpec {
 
 export type CropSpec =
   | { type: 'rect'; x: number; y: number; width: number; height: number }
-  | { type: 'aspect'; width: number; height: number };
+  | { type: 'aspect'; width: number; height: number }
+  /** 按去背景后的主体自动构图（证件照） */
+  | { type: 'subject'; width: number; height: number };
 
 export interface BackgroundRemoval {
   color?: [number, number, number] | null;
@@ -30,12 +32,38 @@ export interface BackgroundRemoval {
   decontaminate: boolean;
   trim: boolean;
   trim_padding: number;
+  /** 更换底色；为空时输出透明 */
+  fill?: [number, number, number] | null;
+  /** 人像模式：保护被主体包住的同色区域（白衬衫等） */
+  portrait?: boolean;
+  /** 抠图方式：按颜色 / AI 人像（MODNet） */
+  method?: RemovalMethod;
+}
+
+export type RemovalMethod = 'color' | 'ai';
+
+export interface MattingModelStatus {
+  available: boolean;
+  path: string | null;
+  bytes: number;
+  license: string;
+}
+
+export interface SubjectBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  top_center_x: number;
+  head_width?: number | null;
+  shoulder_y?: number | null;
 }
 
 export interface RemovalStats {
   color: [number, number, number];
   border_match: number;
   removed_ratio: number;
+  subject?: SubjectBounds | null;
 }
 
 export interface ProcessOptions {
@@ -69,6 +97,8 @@ export interface ProcessReport {
   kept_original: boolean;
   target_met: boolean | null;
   background?: RemovalStats | null;
+  /** 按主体自动构图时实际使用的裁剪框（原图坐标） */
+  auto_crop?: Rect | null;
   warnings: string[];
 }
 
@@ -145,6 +175,8 @@ export interface GenerateParams {
   remove_background?: BackgroundRemoval | null;
   /** 生成后本地调整到的最终尺寸 */
   final_size?: { width: number; height: number; fit: ResizeFit } | null;
+  /** 生成后解析成设计稿 spec */
+  analyze_design?: boolean;
 }
 
 /** 提示词优化时附带的生成参数 */
@@ -184,6 +216,8 @@ export interface GeneratedFile {
   source_url: string | null;
   revised_prompt: string | null;
   warnings: string[];
+  /** 生成后解析出的设计稿 spec */
+  spec_path?: string | null;
 }
 
 export interface McpStatus {
@@ -264,6 +298,10 @@ export interface ImageItem extends LoadedImage {
   selected: boolean;
   /** 裁剪框（原图像素坐标），每张图独立 */
   crop?: Rect;
+  /** 证件照手动微调过的构图框（原图像素坐标）；为空时按主体自动构图 */
+  frame?: Rect;
+  /** 构图框对应的输出尺寸，如 "295x413"；尺寸变了框就失效 */
+  frameKey?: string;
   /** 智能裁剪识别/编辑后的框 */
   regions?: Region[];
   regionNames?: string[];
@@ -279,10 +317,14 @@ export interface ImageItem extends LoadedImage {
   exportState?: { ok: boolean; output: string | null; error: string | null; report: ProcessReport | null };
 }
 
-export type Tool = 'compress' | 'crop' | 'convert' | 'removebg' | 'generate';
+export type Tool = 'compress' | 'crop' | 'convert' | 'removebg' | 'generate' | 'design';
 
-/** 去除背景页的设置（保存在 localStorage，生成图片时也复用） */
+export type PhotoSizeKey = 'original' | '1inch' | '2inch' | 'small-1inch' | 'small-2inch' | 'custom';
+
+/** 背景处理页的设置（保存在 localStorage；生成图片时复用其中的去背景参数） */
 export interface RemoveBgSettings {
+  /** 透明背景 / 更换底色 */
+  mode: 'transparent' | 'replace';
   /** true = 自动识别边缘背景色 */
   auto: boolean;
   /** 手动指定的背景色 #rrggbb */
@@ -294,6 +336,22 @@ export interface RemoveBgSettings {
   trim: boolean;
   trimPadding: number;
   format: 'png' | 'webp' | 'avif';
+  // ---------- 更换底色 ----------
+  /** 新底色 #rrggbb */
+  fill: string;
+  /** 人像模式（仅更换底色、按颜色抠图时生效） */
+  portrait: boolean;
+  /** 透明背景的抠图方式 */
+  method: RemovalMethod;
+  /** 更换底色的抠图方式 */
+  fillMethod: RemovalMethod;
+  photoSize: PhotoSizeKey;
+  customWidth: number | null;
+  customHeight: number | null;
+  /** 限制文件大小 */
+  limitSize: boolean;
+  maxKb: number;
+  fillFormat: 'jpeg' | 'png';
 }
 
 export type ResizeMode = 'original' | 'percent' | 'max' | 'custom';

@@ -26,3 +26,7 @@ on_conflict = "error"
 exclude = ["**/node_modules/**", "**/dist/**", "**/.imgtool/**"]
 warn_kb = 500
 warn_dimension = 2560
+[spec]
+# 设计稿解析（analyze_design）裁出的图标素材目录，不填则放在 .imgtool/specs/<相对目录>/<原名>/icons/
+# icons_dir = "src/assets/icons"
+icon_size = 256

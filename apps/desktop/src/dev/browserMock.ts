@@ -1,6 +1,7 @@
 // 仅开发环境：在普通浏览器里打开前端时模拟 Tauri 后端，方便调界面。
 // 用 canvas 生成示例图，预览用 canvas.toBlob 真实编码，体积数据是真实的。
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
+import { emit } from '@tauri-apps/api/event';
 
 const blobs = new Map<string, { url: string; width: number; height: number; bytes: number; canvas: HTMLCanvasElement }>();
 
@@ -140,6 +141,9 @@ async function register(path: string, canvas: HTMLCanvasElement) {
   blobs.set(path, { url, width: canvas.width, height: canvas.height, bytes: blob.size, canvas });
 }
 
+/** 设计解析的 Mock 结果（按图片路径） */
+const designs = new Map<string, any>();
+
 const MIME: Record<string, string> = { jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', avif: 'image/webp' };
 
 export async function install() {
@@ -179,15 +183,40 @@ export async function install() {
             const r = mockRemoveBg(src, o.remove_background);
             src = r.canvas;
             background = { color: r.color, border_match: 1, removed_ratio: 0.5 };
+            if (o.remove_background.fill) {
+              const c = document.createElement('canvas');
+              c.width = src.width;
+              c.height = src.height;
+              const ctx = c.getContext('2d')!;
+              ctx.fillStyle = `rgb(${o.remove_background.fill.join(',')})`;
+              ctx.fillRect(0, 0, c.width, c.height);
+              ctx.drawImage(src, 0, 0);
+              src = c;
+            }
           }
-          if (o.crop?.type === 'rect') {
+          let autoCrop = null;
+          if (o.crop?.type === 'subject') {
+            // Mock 不识别主体，按比例居中取框
+            const ratio = o.crop.width / o.crop.height;
+            const w = Math.min(src.width, Math.round(src.height * ratio));
+            const h = Math.round(w / ratio);
+            autoCrop = { x: Math.round((src.width - w) / 2), y: Math.round((src.height - h) / 2), width: w, height: h };
+          }
+          const rect = o.crop?.type === 'rect' ? o.crop : autoCrop;
+          if (rect) {
             const c = document.createElement('canvas');
-            c.width = o.crop.width;
-            c.height = o.crop.height;
-            c.getContext('2d')!.drawImage(src, o.crop.x, o.crop.y, o.crop.width, o.crop.height, 0, 0, c.width, c.height);
+            c.width = rect.width;
+            c.height = rect.height;
+            c.getContext('2d')!.drawImage(src, rect.x, rect.y, rect.width, rect.height, 0, 0, c.width, c.height);
             src = c;
           }
-          if (o.resize?.width || o.resize?.height) {
+          if (o.resize?.fit === 'cover' && o.resize.width && o.resize.height) {
+            const c = document.createElement('canvas');
+            c.width = o.resize.width;
+            c.height = o.resize.height;
+            c.getContext('2d')!.drawImage(src, 0, 0, c.width, c.height);
+            src = c;
+          } else if (o.resize?.width || o.resize?.height) {
             const scale = o.resize.width ? o.resize.width / src.width : o.resize.height / src.height;
             const c = document.createElement('canvas');
             c.width = Math.round(src.width * Math.min(scale, 1));
@@ -213,9 +242,20 @@ export async function install() {
               kept_original: false,
               target_met: o.mode.type === 'target_size' ? blob.size <= o.mode.max_bytes : null,
               background,
+              auto_crop: autoCrop,
               warnings: format === 'avif' ? ['浏览器 Mock 模式用 WebP 代替 AVIF'] : [],
             },
           };
+        }
+        case 'matting_model_status':
+          return { available: localStorage.getItem('mock.matting') === '1', path: null, bytes: 25888640, license: 'Apache-2.0（MODNet, ZHKKKe/MODNet）' };
+        case 'download_matting_model': {
+          for (let i = 1; i <= 10; i++) {
+            await new Promise((r) => setTimeout(r, 150));
+            await emit('model-download-progress', { downloaded: i * 2588864, total: 25888640 });
+          }
+          localStorage.setItem('mock.matting', '1');
+          return { available: true, path: '/mock/modnet.onnx', bytes: 25888640, license: 'Apache-2.0（MODNet, ZHKKKe/MODNet）' };
         }
         case 'find_preset':
           return { path: '/demo/.imgtool.toml', options: { mode: { type: 'target_size', max_bytes: 300 * 1024 }, resize: { width: 1920, height: 1920, fit: 'contain', without_enlargement: true }, format: 'webp', keep_original_if_larger: true } };
@@ -304,6 +344,57 @@ export async function install() {
           });
           return { model: cmd === 'generate_svg_icons' ? p.model || 'deepseek-v4.1-flash' : null, total_tokens: 1400, elapsed_ms: 1500, out_dir: '/mock/svg-icons', icons, missing: [] };
         }
+        case 'load_design_spec':
+          return designs.get(a.path) ?? null;
+        case 'analyze_design': {
+          await new Promise((r) => setTimeout(r, 600));
+          const b = blobs.get(a.path)!;
+          const regions = mockDetect(b.canvas, 16);
+          const node = (id: string, type: string, bounds: { x: number; y: number; width: number; height: number }, extra: object = {}) => ({ id, type, bounds, relative: { x: bounds.x, y: bounds.y }, confidence: 0.6, source: 'auto', ...extra });
+          const children = regions.map((r, i) =>
+            node(`n${i + 2}`, 'icon', { x: r.x, y: r.y, width: r.width, height: r.height }, { style: { fill: { type: 'solid', color: '#1677ff' } }, asset: { path: b.url, source: 'crop', width: 256, height: 256 } }),
+          );
+          const spec = {
+            version: 1,
+            generator: 'imgspec mock',
+            source: { path: a.path, width: b.width, height: b.height },
+            kind: 'page',
+            transparent: false,
+            palette: [
+              { color: '#ffffff', ratio: 0.8 },
+              { color: '#1677ff', ratio: 0.1 },
+            ],
+            annotated: false,
+            root: node('n1', 'frame', { x: 0, y: 0, width: b.width, height: b.height }, {
+              style: { fill: { type: 'solid', color: '#ffffff' } },
+              layout: { mode: 'row', gap: 40, gap_uniform: true, padding: [20, 20, 20, 20], align: 'center', cross_align: 'center' },
+              children,
+            }),
+          };
+          const r = { spec, root: '', dir: '/mock/.imgtool/specs/nav', spec_path: '/mock/.imgtool/specs/nav/nav.spec.json', overlay_path: '/mock/.imgtool/specs/nav/nav.spec.png', icons: [], warnings: [], kept_annotations: 0 };
+          designs.set(a.path, r);
+          return r;
+        }
+        case 'save_design_spec': {
+          const prev = designs.get(a.path);
+          const r = { ...prev, spec: a.spec };
+          designs.set(a.path, r);
+          return r;
+        }
+        case 'reanalyze_region':
+          return { id: '', type: 'rect', bounds: a.bounds, relative: { x: 0, y: 0 }, style: { fill: { type: 'solid', color: '#e6f4ff' }, corner_radius: 8 }, confidence: 0.8, source: 'auto' };
+        case 'normalize_spec':
+          return a.spec;
+        case 'generate_design_icons': {
+          await new Promise((r) => setTimeout(r, 1500));
+          const prev = designs.get(a.params.path);
+          const mark = (n: any): any => ({ ...n, asset: n.asset ? { ...n.asset, source: 'generated' } : n.asset, children: n.children?.map(mark) });
+          const r = { ...prev, spec: { ...prev.spec, root: mark(prev.spec.root) }, icons: [{ id: 'n2' }], warnings: [] };
+          designs.set(a.params.path, r);
+          return r;
+        }
+        case 'open_folder':
+          return null;
         case 'plugin:dialog|open':
           return null;
         default:

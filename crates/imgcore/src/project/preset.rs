@@ -15,6 +15,23 @@ pub struct ProjectPreset {
     pub defaults: PresetDefaults,
     pub output: OutputPolicy,
     pub scan: ScanPolicy,
+    pub spec: SpecPolicy,
+}
+
+/// 设计稿解析（imgspec）的项目级设置
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SpecPolicy {
+    /// 图标素材目录（相对项目根目录），如 "src/assets/icons"；不填则放在 .imgtool/specs/<相对目录>/<原名>/icons/
+    pub icons_dir: Option<String>,
+    /// 图标素材边长（像素）
+    pub icon_size: u32,
+}
+
+impl Default for SpecPolicy {
+    fn default() -> Self {
+        Self { icons_dir: None, icon_size: 256 }
+    }
 }
 
 /// 默认处理参数
@@ -35,7 +52,7 @@ impl PresetDefaults {
     /// 转为处理参数；未配置的字段使用内置默认值
     pub fn to_options(&self) -> ProcessOptions {
         let mode = match (self.max_kb, self.quality) {
-            (Some(kb), _) => CompressMode::TargetSize { max_bytes: kb * 1024, min_quality: None },
+            (Some(kb), _) => CompressMode::TargetSize { max_bytes: kb * 1024, min_quality: None, keep_dimensions: false },
             (None, Some(q)) => CompressMode::Quality { quality: q },
             (None, None) => CompressMode::default(),
         };
@@ -120,6 +137,15 @@ impl ProjectPreset {
             path: path.display().to_string(),
             message: e.to_string(),
         })?;
+        if !(16..=2048).contains(&preset.spec.icon_size) {
+            return Err(Error::Preset { path: path.display().to_string(), message: "spec.icon_size 必须在 16-2048".into() });
+        }
+        if let Some(d) = &preset.spec.icons_dir {
+            let p = Path::new(d);
+            if p.is_absolute() || p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                return Err(Error::Preset { path: path.display().to_string(), message: "spec.icons_dir 必须是项目内的相对路径".into() });
+            }
+        }
         if let Some(q) = preset.defaults.quality {
             if !(1..=100).contains(&q) {
                 return Err(Error::Preset { path: path.display().to_string(), message: "quality 必须在 1-100".into() });
@@ -169,8 +195,18 @@ mod tests {
     fn max_kb_switches_to_target_mode() {
         let d = PresetDefaults { max_kb: Some(200), max_width: Some(1920), ..Default::default() };
         let o = d.to_options();
-        assert_eq!(o.mode, CompressMode::TargetSize { max_bytes: 200 * 1024, min_quality: None });
+        assert_eq!(o.mode, CompressMode::TargetSize { max_bytes: 200 * 1024, min_quality: None, keep_dimensions: false });
         assert_eq!(o.resize.unwrap().width, Some(1920));
+    }
+
+    #[test]
+    fn spec_section() {
+        let p = ProjectPreset::parse("[spec]\nicons_dir = \"src/assets/icons\"\nicon_size = 128", Path::new("t")).unwrap();
+        assert_eq!(p.spec.icons_dir.as_deref(), Some("src/assets/icons"));
+        assert_eq!(p.spec.icon_size, 128);
+        assert_eq!(ProjectPreset::default().spec.icon_size, 256);
+        assert!(ProjectPreset::parse("[spec]\nicons_dir = \"../x\"", Path::new("t")).is_err());
+        assert!(ProjectPreset::parse("[spec]\nicon_size = 4", Path::new("t")).is_err());
     }
 
     #[test]

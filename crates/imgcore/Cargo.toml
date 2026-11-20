@@ -18,6 +18,8 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 # 默认特性在 x86 上需要 nasm 才会启用 SIMD，缺少 nasm 时自动降级为纯 C 实现
 mozjpeg = "0.10.13"
 oxipng = { version = "10.2.1", default-features = false, features = ["parallel", "zopfli"] }
+# AI 人像抠图（MODNet）推理，纯 Rust，无系统依赖
+tract-onnx = "0.23.10"
 png = "0.18.1"
 ravif = "0.13.0"
 # SVG 渲染（纯 Rust）。不加载外部文件，只允许内嵌 data: 图片

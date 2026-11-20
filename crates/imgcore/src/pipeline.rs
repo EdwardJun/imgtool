@@ -25,23 +25,47 @@ pub fn process(input: &[u8], opts: &ProcessOptions) -> Result<ProcessOutput> {
 
     let mut bg_stats = None;
     if let Some(removal) = &opts.remove_background {
-        let (out, stats) = crate::background::remove_background(&img, removal);
-        // 纯色背景的边缘匹配率接近 100%（实测白底产品图 100%，场景插画 58%~81%）
-        if stats.border_match < 0.9 {
+        let (out, stats) = crate::background::remove_background(&img, removal)?;
+        let by_color = removal.method == crate::background::RemovalMethod::Color;
+        // 纯色背景的边缘匹配率接近 100%（实测白底产品图 100%，场景插画 58%~81%）；AI 抠图不要求纯色背景
+        if by_color && stats.border_match < 0.9 {
             warnings.push(format!(
                 "背景不是纯色（边缘只有 {:.0}% 与背景色匹配），去除效果可能不理想，可调高容差或手动指定背景色",
                 stats.border_match * 100.0
             ));
         }
         if stats.removed_ratio < 0.001 {
-            warnings.push("没有找到可去除的背景，请检查背景色或调高容差".to_string());
+            warnings.push(if by_color { "没有找到可去除的背景，请检查背景色或调高容差" } else { "AI 抠图没有识别到人像以外的背景" }.to_string());
+        }
+        if !by_color && stats.subject.is_none() {
+            warnings.push("AI 抠图没有识别到人像（只适合人物照片）".to_string());
         }
         img = out;
         bg_stats = Some(stats);
     }
 
+    let mut auto_crop = None;
     if let Some(crop) = &opts.crop {
-        img = apply_crop(img, crop)?;
+        let crop = match *crop {
+            CropSpec::Subject { width, height } => {
+                if width == 0 || height == 0 {
+                    return Err(Error::InvalidArgument("宽高比必须大于 0".into()));
+                }
+                match bg_stats.as_ref().and_then(|s| s.subject.as_ref()) {
+                    Some(subject) => {
+                        let r = crate::portrait::frame(subject, img.width(), img.height(), width, height);
+                        auto_crop = Some(r);
+                        CropSpec::Rect { x: r.x, y: r.y, width: r.width, height: r.height }
+                    }
+                    None => {
+                        warnings.push("没有识别到主体（需要同时去除背景），已改为居中裁剪".to_string());
+                        CropSpec::Aspect { width, height }
+                    }
+                }
+            }
+            ref other => other.clone(),
+        };
+        img = apply_crop(img, &crop)?;
     }
     if let Some(resize) = &opts.resize {
         img = apply_resize(img, resize)?;
@@ -49,8 +73,9 @@ pub fn process(input: &[u8], opts: &ProcessOptions) -> Result<ProcessOutput> {
 
     let source_fmt = OutputFormat::from_extension(source_name);
     let removed_bg = bg_stats.is_some();
-    // 去除背景且未指定格式时，原格式不支持透明（如 JPEG）就改为 PNG
-    let default_fmt = source_fmt.filter(|f| !removed_bg || f.supports_alpha());
+    // 去除背景（未更换底色）后图片带透明，未指定格式且原格式不支持透明（如 JPEG）时改为 PNG
+    let needs_alpha = removed_bg && opts.remove_background.as_ref().is_some_and(|r| r.fill.is_none());
+    let default_fmt = source_fmt.filter(|f| !needs_alpha || f.supports_alpha());
     let out_fmt = opts.format.or(default_fmt).unwrap_or(OutputFormat::Png);
     let geometry_changed = (img.width(), img.height()) != (orig_w, orig_h);
     // 内容被修改（去背景）时不能回退为原图
@@ -70,6 +95,7 @@ pub fn process(input: &[u8], opts: &ProcessOptions) -> Result<ProcessOutput> {
         kept_original: false,
         target_met: None,
         background: None,
+        auto_crop: None,
         warnings: Vec::new(),
     };
 
@@ -99,7 +125,7 @@ pub fn process(input: &[u8], opts: &ProcessOptions) -> Result<ProcessOutput> {
             let data = encode(&px, out_fmt, EncodeParams { quality: q, fast: false, background })?;
             (data, q, px.width, px.height, None)
         }
-        CompressMode::TargetSize { max_bytes, min_quality } => {
+        CompressMode::TargetSize { max_bytes, min_quality, keep_dimensions } => {
             if *max_bytes == 0 {
                 return Err(Error::InvalidArgument("目标体积必须大于 0".into()));
             }
@@ -111,7 +137,8 @@ pub fn process(input: &[u8], opts: &ProcessOptions) -> Result<ProcessOutput> {
                 return Ok(ProcessOutput { data: input.to_vec(), report });
             }
             let min_q = min_quality.unwrap_or(DEFAULT_MIN_QUALITY).clamp(1, 94);
-            let found = search_target_size(img.clone(), px, out_fmt, *max_bytes, min_q, background, &mut warnings)?;
+            let rounds = if *keep_dimensions { 1 } else { MAX_SHRINK_ROUNDS };
+            let found = search_target_size(img.clone(), px, out_fmt, *max_bytes, min_q, rounds, background, &mut warnings)?;
             (found.data, Some(found.quality), found.width, found.height, Some(found.met))
         }
     };
@@ -138,6 +165,7 @@ pub fn process(input: &[u8], opts: &ProcessOptions) -> Result<ProcessOutput> {
         kept_original: false,
         target_met,
         background: bg_stats,
+        auto_crop,
         warnings,
     };
     Ok(ProcessOutput { data, report })
@@ -159,12 +187,13 @@ fn search_target_size(
     fmt: OutputFormat,
     max_bytes: u64,
     min_q: u8,
+    max_rounds: usize,
     background: [u8; 3],
     warnings: &mut Vec<String>,
 ) -> Result<SearchResult> {
     let mut smallest: Option<SearchResult> = None;
 
-    for round in 0..MAX_SHRINK_ROUNDS {
+    for round in 0..max_rounds {
         if round > 0 {
             px = Pixels::from_image(&img);
         }
@@ -205,6 +234,9 @@ fn search_target_size(
             smallest = Some(SearchResult { data: round_smallest, quality: min_q, width: cur_w, height: cur_h, met: false });
         }
 
+        if round + 1 >= max_rounds {
+            break;
+        }
         // 体积大致与像素数成正比，按面积比开方得到边长缩放系数，再留一点余量
         let scale = (ratio.sqrt() * 0.92).clamp(0.25, 0.9);
         let nw = ((cur_w as f64) * scale).round() as u32;
@@ -216,10 +248,17 @@ fn search_target_size(
     }
 
     let result = smallest.ok_or_else(|| Error::Encode("目标体积搜索失败".into()))?;
-    warnings.push(format!(
-        "已缩小到 {}x{}、质量 {}，仍无法达到目标体积",
-        result.width, result.height, result.quality
-    ));
+    if max_rounds <= 1 {
+        warnings.push(format!(
+            "质量已降到 {}（保持 {}x{} 不缩小），仍无法达到目标体积",
+            result.quality, result.width, result.height
+        ));
+    } else {
+        warnings.push(format!(
+            "已缩小到 {}x{}、质量 {}，仍无法达到目标体积",
+            result.width, result.height, result.quality
+        ));
+    }
     Ok(result)
 }
 
@@ -232,7 +271,8 @@ pub fn apply_crop(img: DynamicImage, crop: &CropSpec) -> Result<DynamicImage> {
             }
             (x, y, width.min(w - x), height.min(h - y))
         }
-        CropSpec::Aspect { width: aw, height: ah } => {
+        // 单独调用时没有主体信息，Subject 按居中裁剪处理（process 里会先换算成 Rect）
+        CropSpec::Aspect { width: aw, height: ah } | CropSpec::Subject { width: aw, height: ah } => {
             if aw == 0 || ah == 0 {
                 return Err(Error::InvalidArgument("宽高比必须大于 0".into()));
             }

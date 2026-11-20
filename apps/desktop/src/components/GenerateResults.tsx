@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { App, Button, Empty, Spin, Tag, Tooltip } from 'antd';
-import { DeleteOutlined, DownloadOutlined, PlusSquareOutlined, WarningOutlined } from '@ant-design/icons';
+import { ApartmentOutlined, DeleteOutlined, DownloadOutlined, PlusSquareOutlined, WarningOutlined } from '@ant-design/icons';
 import { open } from '@tauri-apps/plugin-dialog';
 import { api, fileSrc, formatBytes } from '../api';
 import type { GenResult } from '../generate/useGenerator';
@@ -11,6 +11,8 @@ interface Props {
   onClear: () => void;
   /** 把生成结果加入图片列表，继续压缩/裁剪/转格式 */
   onUse: (paths: string[]) => void;
+  /** 在「设计解析」中打开 */
+  onDesign: (path: string) => void;
 }
 
 function Elapsed({ from, to }: { from: number; to?: number }) {
@@ -23,7 +25,7 @@ function Elapsed({ from, to }: { from: number; to?: number }) {
   return <span>{Math.round(((to ?? now) - from) / 1000)}s</span>;
 }
 
-export function GenerateResults({ results, onRemove, onClear, onUse }: Props) {
+export function GenerateResults({ results, onRemove, onClear, onUse, onDesign }: Props) {
   const { message } = App.useApp();
   const done = results.filter((r) => r.status === 'done' && r.file);
 
@@ -107,6 +109,11 @@ export function GenerateResults({ results, onRemove, onClear, onUse }: Props) {
                     <Button size="small" type="text" icon={<DownloadOutlined />} onClick={() => saveTo([r.file!.path])}>
                       保存
                     </Button>
+                    <Tooltip title={r.file.spec_path ? '已解析，打开查看与标注' : '解析成设计稿结构化描述'}>
+                      <Button size="small" type="text" icon={<ApartmentOutlined />} onClick={() => onDesign(r.file!.path)}>
+                        设计解析
+                      </Button>
+                    </Tooltip>
                   </>
                 )}
                 {r.status !== 'running' && <Button size="small" type="text" icon={<DeleteOutlined />} aria-label="删除结果" onClick={() => onRemove(r.id)} />}

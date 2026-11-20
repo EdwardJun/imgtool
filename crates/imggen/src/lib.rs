@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod chat;
 pub mod fetch;
+pub mod models;
 pub mod prompt;
 pub mod sizes;
 pub mod svg_icons;

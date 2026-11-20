@@ -15,11 +15,13 @@ import type {
   ExportTarget,
   FoundPreset,
   LoadedImage,
+  MattingModelStatus,
   McpClient,
   McpStatus,
   PreviewResult,
   ProcessOptions,
 } from './types';
+import type { Bounds, DesignResult, RunOptions, Spec, SpecNode } from './design/types';
 
 export const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tif', 'tiff', 'ico', 'svg'];
 
@@ -45,6 +47,8 @@ export const api = {
   mcpStatus: () => invoke<McpStatus>('mcp_status'),
   mcpInstall: (client: McpClient) => invoke<string>('mcp_install', { client }),
   initialPaths: () => invoke<string[]>('initial_paths'),
+  mattingModelStatus: () => invoke<MattingModelStatus>('matting_model_status'),
+  downloadMattingModel: () => invoke<MattingModelStatus>('download_matting_model'),
   getApiSettings: () => invoke<ApiSettings>('get_api_settings'),
   saveApiSettings: (settings: ApiSettings) => invoke<void>('save_api_settings', { settings }),
   generateImage: (params: GenerateParams) => invoke<GeneratedFile>('generate_image', { params }),
@@ -54,6 +58,14 @@ export const api = {
   uploadReference: (baseUrl: string, apiKey: string, path: string) =>
     invoke<UploadedRef>('upload_reference', { baseUrl, apiKey, path }),
   detectRegions: (path: string, options: DetectOptions) => invoke<DetectResult>('detect_regions', { path, options }),
+  analyzeDesign: (path: string, options: RunOptions) => invoke<DesignResult>('analyze_design', { path, options }),
+  loadDesignSpec: (path: string) => invoke<DesignResult | null>('load_design_spec', { path }),
+  saveDesignSpec: (path: string, spec: Spec) => invoke<DesignResult>('save_design_spec', { path, spec }),
+  reanalyzeRegion: (path: string, bounds: Bounds) => invoke<SpecNode>('reanalyze_region', { path, bounds }),
+  normalizeSpec: (spec: Spec) => invoke<Spec>('normalize_spec', { spec }),
+  generateDesignIcons: (params: { path: string; base_url: string; api_key: string; model: string; quality?: string; ids?: string[] | null; style?: string | null }) =>
+    invoke<DesignResult>('generate_design_icons', { params }),
+  openFolder: (path: string) => invoke<void>('open_folder', { path }),
   async exportRegions(
     items: { path: string; regions: Region[] | null; names: string[] }[],
     detect: DetectOptions,

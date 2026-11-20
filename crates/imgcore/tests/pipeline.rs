@@ -62,7 +62,7 @@ fn converts_to_every_format() {
 fn target_size_is_met_for_jpeg() {
     let src = encode_as(&sample_image(1200, 900, false), ImageFormat::Jpeg);
     let max = 60 * 1024;
-    let opts = ProcessOptions { mode: CompressMode::TargetSize { max_bytes: max, min_quality: None }, ..Default::default() };
+    let opts = ProcessOptions { mode: CompressMode::TargetSize { max_bytes: max, min_quality: None, keep_dimensions: false }, ..Default::default() };
     let out = process(&src, &opts).unwrap();
     assert_eq!(out.report.target_met, Some(true), "{:?}", out.report);
     assert!(out.data.len() as u64 <= max);
@@ -74,7 +74,7 @@ fn target_size_shrinks_resolution_when_needed() {
     let max = 8 * 1024;
     let opts = ProcessOptions {
         format: Some(OutputFormat::Webp),
-        mode: CompressMode::TargetSize { max_bytes: max, min_quality: Some(50) },
+        mode: CompressMode::TargetSize { max_bytes: max, min_quality: Some(50), keep_dimensions: false },
         ..Default::default()
     };
     let out = process(&src, &opts).unwrap();
@@ -193,6 +193,78 @@ fn remove_background_from_jpeg_outputs_transparent_png() {
     assert!((40..=46).contains(&decoded.width()) && (40..=46).contains(&decoded.height()), "{:?}", decoded.dimensions());
     let c = decoded.get_pixel(decoded.width() / 2, decoded.height() / 2);
     assert_eq!(c[3], 255);
+}
+
+/// 白墙前的"人像"：圆形头部 + 下方延伸到底边的肩膀
+fn portrait_on_white(w: u32, h: u32) -> DynamicImage {
+    DynamicImage::ImageRgba8(RgbaImage::from_fn(w, h, |x, y| {
+        let (cx, cy, r) = (w as f32 * 0.55, h as f32 * 0.35, w as f32 * 0.15);
+        let head = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt() < r;
+        let body = y as f32 > cy + r * 0.8 && (x as f32 - cx).abs() < r * 2.2;
+        if head || body {
+            Rgba([200, 120, 90, 255])
+        } else {
+            Rgba([250, 250, 250, 255])
+        }
+    }))
+}
+
+#[test]
+fn replace_background_keeps_jpeg_and_fills_color() {
+    let src = encode_as(&portrait_on_white(300, 400), ImageFormat::Jpeg);
+    let blue = [67, 142, 219];
+    let opts = ProcessOptions {
+        remove_background: Some(BackgroundRemoval { fill: Some(blue), ..Default::default() }),
+        mode: CompressMode::Quality { quality: 92 },
+        keep_original_if_larger: false,
+        ..Default::default()
+    };
+    let out = process(&src, &opts).unwrap();
+    assert_eq!(out.report.format, OutputFormat::Jpeg, "更换底色后不需要透明，保持 JPEG");
+    assert!(!out.report.warnings.iter().any(|w| w.contains("透明")), "{:?}", out.report.warnings);
+    let img = image::load_from_memory(&out.data).unwrap().to_rgb8();
+    let corner = img.get_pixel(2, 2);
+    assert!((0..3).all(|c| (corner[c] as i32 - blue[c] as i32).abs() <= 6), "角落应为蓝底: {corner:?}");
+    let face = img.get_pixel(165, 140);
+    assert!(face[0] > 170 && face[2] < 130, "主体保留: {face:?}");
+}
+
+#[test]
+fn id_photo_auto_frames_subject_and_meets_size_limit() {
+    let src = encode_as(&portrait_on_white(900, 1000), ImageFormat::Png);
+    let opts = ProcessOptions {
+        remove_background: Some(BackgroundRemoval { fill: Some([255, 0, 0]), ..Default::default() }),
+        crop: Some(CropSpec::Subject { width: 295, height: 413 }),
+        resize: Some(ResizeSpec { width: Some(295), height: Some(413), fit: ResizeFit::Cover, without_enlargement: false }),
+        format: Some(OutputFormat::Jpeg),
+        mode: CompressMode::TargetSize { max_bytes: 20 * 1024, min_quality: Some(10), keep_dimensions: true },
+        keep_original_if_larger: false,
+        ..Default::default()
+    };
+    let out = process(&src, &opts).unwrap();
+    let r = &out.report;
+    assert_eq!((r.width, r.height), (295, 413), "{r:?}");
+    assert_eq!(r.target_met, Some(true), "{r:?}");
+    assert!(r.output_bytes <= 20 * 1024);
+    let frame = r.auto_crop.expect("返回自动构图的框");
+    let subject = r.background.as_ref().unwrap().subject.unwrap();
+    assert!(frame.y < subject.y, "头顶上方留白: {frame:?} {subject:?}");
+    let center = frame.x + frame.width / 2;
+    assert!((center as i64 - 495).abs() <= 6, "按头部水平居中: {frame:?}");
+}
+
+#[test]
+fn target_size_keep_dimensions_does_not_shrink() {
+    let src = encode_as(&sample_image(600, 400, false), ImageFormat::Png);
+    let opts = ProcessOptions {
+        format: Some(OutputFormat::Jpeg),
+        mode: CompressMode::TargetSize { max_bytes: 800, min_quality: Some(40), keep_dimensions: true },
+        ..Default::default()
+    };
+    let out = process(&src, &opts).unwrap();
+    assert_eq!((out.report.width, out.report.height), (600, 400));
+    assert_eq!(out.report.target_met, Some(false));
+    assert!(out.report.warnings.iter().any(|w| w.contains("不缩小")), "{:?}", out.report.warnings);
 }
 
 #[test]

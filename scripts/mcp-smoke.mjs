@@ -109,6 +109,37 @@ function makeSheet() {
   ]);
 }
 
+/** 设计稿：白底 600x400，上方蓝色卡片，下方 3 个圆环图标 */
+function makeDesign() {
+  const w = 600, h = 400;
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  const raw = Buffer.alloc((w * 3 + 1) * h, 255);
+  for (let y = 0; y < h; y++) {
+    raw[y * (w * 3 + 1)] = 0;
+    for (let x = 0; x < w; x++) {
+      const o = y * (w * 3 + 1) + 1 + x * 3;
+      const card = x >= 40 && x < 560 && y >= 40 && y < 240;
+      const k = Math.floor((x - 60) / 200);
+      const cx = 100 + k * 200, cy = 320;
+      const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
+      const ring = k >= 0 && k < 3 && d <= 20 && d >= 14;
+      if (card || ring) {
+        raw[o] = 22; raw[o + 1] = 119; raw[o + 2] = 255;
+      }
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
 // ---- 准备临时项目 ----
 const project = realpathSync(mkdtempSync(join(tmpdir(), 'imgtool-smoke-')));
 mkdirSync(join(project, 'public/img'), { recursive: true });
@@ -221,7 +252,7 @@ try {
   const tools = await request('tools/list', {});
   const names = tools.result.tools.map((t) => t.name).sort();
   console.log('      tools:', names.join(', '));
-  check(names.length === 16, '暴露 16 个工具');
+  check(names.length === 19, '暴露 19 个工具');
 
   const ctx = await call('get_project_context');
   check(ctx.data.roots[0] === project, `根目录来自客户端 Roots: ${ctx.data.roots[0]}`);
@@ -261,6 +292,28 @@ try {
   check(!bg.isError && existsSync(join(project, 'nobg/icon.png')), `remove_background 输出 png: ${bg.summary}`);
   const bgJpeg = await call('remove_background', { paths: ['public/img/icon.png'], format: 'jpeg' });
   check(bgJpeg.isError, 'remove_background 拒绝 jpeg 输出');
+  const idPhoto = await call('remove_background', {
+    paths: ['public/img/icon.png'],
+    fill_color: 'blue',
+    photo_size: '1inch',
+    max_kb: 30,
+    output_mode: 'dir',
+    out_dir: 'idphoto',
+  });
+  const idItem = idPhoto.data?.items?.[0];
+  check(
+    !idPhoto.isError && existsSync(join(project, 'idphoto/icon.jpg')) && idItem?.width === 295 && idItem?.height === 413 && idItem?.output_bytes <= 30 * 1024,
+    `remove_background 换蓝底输出一寸 jpg: ${idPhoto.summary}`,
+  );
+  const badFill = await call('remove_background', { paths: ['public/img/icon.png'], fill_color: 'purple' });
+  check(badFill.isError, 'remove_background 拒绝无效底色');
+  // AI 抠图：只在本机已有模型时检查（不在冒烟测试里下载 25MB）
+  if (process.env.IMGTOOL_MATTING_MODEL && existsSync(process.env.IMGTOOL_MATTING_MODEL)) {
+    const ai = await call('remove_background', { paths: ['public/img/icon.png'], method: 'ai', fill_color: 'white', photo_size: '1inch', output_mode: 'dir', out_dir: 'ai' });
+    check(!ai.isError && ai.data?.items?.[0]?.width === 295 && existsSync(join(project, 'ai/icon.jpg')), `remove_background method=ai: ${ai.summary}`);
+  } else {
+    console.log('SKIP  remove_background method=ai（未设置 IMGTOOL_MATTING_MODEL）');
+  }
 
   // 智能裁剪：白底上 3 个深色方块
   writeFileSync(join(project, 'public/img/sheet.png'), makeSheet());
@@ -361,6 +414,53 @@ try {
 
   const impSvg = await call('import_image', { base64: Buffer.from(ICON).toString('base64'), filename: 'logo' });
   check(!impSvg.isError && impSvg.data.path === '.imgtool/inbox/logo.svg', `import_image 支持 svg: ${impSvg.summary}`);
+
+  // ---- 设计稿解析：analyze_design → annotate_design → generate_design_icons；generate_image(analyze_design) ----
+  writeFileSync(join(project, 'public/img/design.png'), makeDesign());
+  const ad = await request('tools/call', { name: 'analyze_design', arguments: { path: 'public/img/design.png' } });
+  const adText = ad.result.content[0].text;
+  const adTree = ad.result.content[1].text;
+  const adJson = JSON.parse(ad.result.content[2].text);
+  check(!ad.result.isError && adJson.spec_path === '.imgtool/specs/public/img/design/design.spec.json' && existsSync(join(project, adJson.spec_path)), `analyze_design 写出 spec: ${adText.split('\n')[0]}`);
+  check(existsSync(join(project, '.imgtool/specs/public/img/design/design.spec.png')) && ad.result.content.some((c) => c.type === 'image'), 'analyze_design 返回编号标注图');
+  check(adJson.icons.length === 3 && adJson.icons.every((i) => existsSync(join(project, i.path))), `识别并裁出 3 个图标素材: ${adJson.icons.map((i) => i.path)}`);
+  check(adTree.includes('n1 frame') && adTree.includes('icon') && adText.includes('annotate_design'), '返回精简树并提示下一步');
+  const iconId = adJson.icons[0].id;
+  const an = await call('annotate_design', { spec: 'public/img/design.png', annotations: [{ id: iconId.slice(1), name: 'home', role: 'tab_icon' }, { id: 'n1', role: 'page' }], notes: '首页' });
+  check(!an.isError && an.data.renamed_icons?.[0]?.path === '.imgtool/specs/public/img/design/icons/home.png' && existsSync(join(project, an.data.renamed_icons[0].path)), `annotate_design 写回并按名字重命名素材: ${an.summary.split('\n')[0]}`);
+  const savedSpec = JSON.parse(readFileSync(join(project, adJson.spec_path), 'utf8'));
+  check(savedSpec.annotated === true && savedSpec.notes === '首页' && savedSpec.root.role === 'page', 'spec 记录语义与说明');
+  const anBad = await call('annotate_design', { spec: adJson.spec_path, annotations: [{ id: 'n999', name: 'x' }] });
+  check(anBad.isError && anBad.summary.includes('n999'), '未知编号报错');
+  const anNo = await call('annotate_design', { spec: 'public/img/hero.png', annotations: [{ id: 'n1' }] });
+  check(anNo.isError, '未解析过的图提示先 analyze_design');
+  const ad2 = await request('tools/call', { name: 'analyze_design', arguments: { path: 'public/img/design.png' } });
+  check(JSON.parse(ad2.result.content[2].text).kept_annotations >= 2, '重新解析保留已有标注');
+
+  const createsBefore = fake.creates.length;
+  const gdi = await call('generate_design_icons', { spec: adJson.spec_path, style: '线性图标' });
+  check(!gdi.isError && gdi.data.task_id && gdi.data.ids.length === 3 && gdi.data.grid.join('x') === '2x2', `generate_design_icons 提交网格重绘: ${gdi.summary}`);
+  let gst;
+  for (let i = 0; i < 5; i++) {
+    const r = await request('tools/call', { name: 'get_generation', arguments: { task_id: gdi.data.task_id, wait_seconds: 20 } });
+    gst = { json: JSON.parse(r.result.content[1].text), text: r.result.content[0].text };
+    if (gst.json.status !== 'running') break;
+  }
+  const gd = gst.json.files?.[0]?.design;
+  check(gst.json.status === 'completed' && gd?.icons?.length >= 1 && gd.icons.every((i) => i.source === 'generated'), `图标网格拆分并写回 spec: ${gst.text}`);
+  check(adJson.dir === '.imgtool/specs/public/img/design' && gst.json.files[0].path.startsWith(`${adJson.dir}/design-icons-sheet-`) && existsSync(join(project, adJson.dir, 'design.icons-ref.png')), '解析产物（spec、标注图、图标、参考图、网格图）都在同一个文件夹');
+  const gReq = fake.creates[createsBefore];
+  check(gReq?.prompt.includes('home') && gReq.prompt.includes('2 列 × 2 行') && gReq.reference_images?.length === 2 && gReq.prompt.includes('第二张参考图'), '提示词带图标名与网格，原图标网格 + 框出位置的设计稿作为两张参考图');
+
+  const genD = await call('generate_image', { prompt: '电商首页 UI 设计稿', analyze_design: true, name: 'ui' });
+  let dst;
+  for (let i = 0; i < 5; i++) {
+    const r = await request('tools/call', { name: 'get_generation', arguments: { task_id: genD.data.task_id, wait_seconds: 20 } });
+    dst = { json: JSON.parse(r.result.content[1].text), text: r.result.content[0].text };
+    if (dst.json.status !== 'running') break;
+  }
+  const dd = dst.json.files?.[0]?.design;
+  check(dst.json.status === 'completed' && dd?.spec_path?.startsWith('.imgtool/specs/.imgtool/generated/ui-') && existsSync(join(project, dd.overlay_path)) && dst.text.includes('annotate_design'), `generate_image(analyze_design) 生成后出 spec: ${dd?.spec_path}`);
 
   const info = await call('image_info', { paths: ['public/img/hero.webp'] });
   check(info.data[0].info.format === 'webp', 'image_info 识别格式');

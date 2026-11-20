@@ -5,14 +5,16 @@ pub mod decode;
 pub mod detect;
 pub mod encode;
 pub mod error;
+pub mod matting;
 pub mod pipeline;
+pub mod portrait;
 pub mod postprocess;
 pub mod project;
 pub mod resize;
 pub mod svg;
 pub mod types;
 
-pub use background::{BackgroundRemoval, RemovalStats};
+pub use background::{BackgroundRemoval, RemovalMethod, RemovalStats};
 pub use decode::probe;
 pub use error::{Error, Result};
 pub use pipeline::process;

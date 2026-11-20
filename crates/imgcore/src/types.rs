@@ -75,6 +75,9 @@ pub enum CompressMode {
         /// 质量下限，默认 40
         #[serde(default)]
         min_quality: Option<u8>,
+        /// 保持输出尺寸：质量降到下限仍超标时也不缩小分辨率（如证件照必须是固定像素），默认 false
+        #[serde(default)]
+        keep_dimensions: bool,
     },
     /// 无损：PNG 用 oxipng 重压缩、WebP 用无损模式；JPEG/AVIF 退化为质量 95
     Lossless,
@@ -123,12 +126,24 @@ pub enum CropSpec {
     Rect { x: u32, y: u32, width: u32, height: u32 },
     /// 按宽高比居中裁剪，例如 16:9
     Aspect { width: u32, height: u32 },
+    /// 按主体自动构图（证件照）：以去除背景后的主体为准，头部水平居中、头顶留白，按宽高比取框。
+    /// 需要同时去除背景；没有识别到主体时退化为居中裁剪
+    Subject { width: u32, height: u32 },
+}
+
+/// 像素矩形
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PixelRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProcessOptions {
-    /// 最先执行：去除纯色背景（输出需为 png/webp/avif 才能保留透明）
+    /// 最先执行：去除纯色背景（输出需为 png/webp/avif 才能保留透明；设置了 fill 更换底色时可输出 jpeg）
     #[serde(default)]
     pub remove_background: Option<crate::background::BackgroundRemoval>,
     /// 再裁剪
@@ -200,6 +215,9 @@ pub struct ProcessReport {
     /// 去除背景的统计（识别出的背景色、去除比例等）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<crate::background::RemovalStats>,
+    /// 按主体自动构图时实际使用的裁剪框（裁剪前的图片坐标），便于界面在此基础上微调
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_crop: Option<PixelRect>,
     pub warnings: Vec<String>,
 }
 

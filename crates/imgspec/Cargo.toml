@@ -1,0 +1,22 @@
+[package]
+name = "imgspec"
+description = "设计稿解析：把 UI 设计稿或单个样式图转换成 Agent 可读的结构化描述（嵌套节点树、坐标、样式、布局）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# 为参数类型派生 JSON Schema（MCP 工具参数会用到）
+schema = ["dep:schemars", "imgcore/schema"]
+
+[dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+imgcore = { version = "0.1.0", path = "../imgcore" }
+schemars = { version = "1", optional = true }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+
+[dev-dependencies]
+tempfile = "3.27.0"

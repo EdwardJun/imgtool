@@ -23,7 +23,7 @@ interface Props {
   onOpenSettings: () => void;
   running: boolean;
   onGenerate: (params: GenerateParams, count: number) => void;
-  /** 「去除背景」页当前的参数 */
+  /** 「背景处理」页当前的去背景参数 */
   removal: BackgroundRemoval;
   onEditRemoval: () => void;
 }
@@ -217,6 +217,7 @@ export function GeneratePanel({ running, onGenerate, removal, onEditRemoval, api
         format: form.format,
         remove_background: form.removeBg ? removal : null,
         final_size: fs.enabled && fs.width && fs.height ? { width: fs.width, height: fs.height, fit: fs.fit } : null,
+        analyze_design: form.analyzeDesign,
       },
       form.count,
     );
@@ -390,10 +391,19 @@ export function GeneratePanel({ running, onGenerate, removal, onEditRemoval, api
       </div>
       {form.removeBg && (
         <div className="panel-hint block">
-          使用「去除背景」页的参数（容差 {removal.tolerance}、柔和 {removal.softness}
+          使用「背景处理」页的去背景参数（容差 {removal.tolerance}、柔和 {removal.softness}
           {removal.trim ? '、裁掉空白' : ''}）。提示词里写明"纯白背景"效果最好。
         </div>
       )}
+      <div className="switch-row">
+        <span>
+          生成后解析设计稿{' '}
+          <Tooltip title="生成 UI 设计稿时开启：自动解析成节点坐标、样式与布局，并裁出图标素材，可在「设计解析」里查看和标注">
+            <QuestionCircleOutlined className="muted" />
+          </Tooltip>
+        </span>
+        <Switch aria-label="生成后解析设计稿" checked={form.analyzeDesign} onChange={(v) => set({ analyzeDesign: v })} />
+      </div>
       <div className="switch-row">
         <span>
           调整到最终尺寸{' '}

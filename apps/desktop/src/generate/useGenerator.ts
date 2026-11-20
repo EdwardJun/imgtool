@@ -26,6 +26,8 @@ export interface GenForm {
   removeBg: boolean;
   /** 生成后本地调整到的最终尺寸 */
   finalSize: { enabled: boolean; width: number | null; height: number | null; fit: 'cover' | 'contain' | 'fill' };
+  /** 生成后解析成设计稿 */
+  analyzeDesign: boolean;
 }
 
 const FORM_KEY = 'imgtool.generate.form';
@@ -38,6 +40,7 @@ export const defaultForm: GenForm = {
   transparent: false,
   removeBg: false,
   finalSize: { enabled: false, width: 1024, height: 1024, fit: 'cover' },
+  analyzeDesign: false,
 };
 
 /** 非敏感的生成参数记在 localStorage */

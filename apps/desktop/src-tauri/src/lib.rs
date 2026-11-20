@@ -1,5 +1,7 @@
 mod commands;
+mod design_spec;
 mod generate;
+mod matting;
 mod mcp_config;
 mod references;
 mod smart_crop;
@@ -12,6 +14,7 @@ pub fn run() {
         .manage(references::RefCache::default())
         .setup(|app| {
             commands::clean_previews(app.handle());
+            matting::register_downloaded();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -33,6 +36,15 @@ pub fn run() {
             references::upload_reference,
             svg_icons::generate_svg_icons,
             svg_icons::render_svg_set,
+            matting::matting_model_status,
+            matting::download_matting_model,
+            design_spec::analyze_design,
+            design_spec::load_design_spec,
+            design_spec::save_design_spec,
+            design_spec::reanalyze_region,
+            design_spec::normalize_spec,
+            design_spec::generate_design_icons,
+            design_spec::open_folder,
         ])
         .run(tauri::generate_context!())
         .expect("启动应用失败");

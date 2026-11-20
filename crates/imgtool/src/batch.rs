@@ -36,6 +36,9 @@ pub struct BatchItem {
     /// 去除背景时识别出的背景色、边缘匹配率、去除比例
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<imgcore::RemovalStats>,
+    /// 证件照按主体自动构图时使用的裁剪框（原图坐标）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_crop: Option<imgcore::PixelRect>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
@@ -170,6 +173,7 @@ pub fn run_batch(
                     kept_original: rep.kept_original,
                     target_met: rep.target_met,
                     background: rep.background,
+                    auto_crop: rep.auto_crop,
                     warnings: rep.warnings,
                 });
             }

@@ -9,9 +9,10 @@
 | 图片压缩 | `compress.md` | 桌面端 CompressPanel；MCP `compress_images`、`scan_images` | 待补 |
 | 裁剪 | `crop.md` | 桌面端 CropPanel；MCP `crop_image` | 待补 |
 | 格式转换 | `convert.md` | 桌面端 ConvertPanel；MCP `convert_images` | 待补 |
-| 去背景 | `remove-background.md` | 桌面端 RemoveBgPanel；MCP `remove_background` | 待补 |
+| 背景处理（去除背景 / 更换底色 / 证件照 / AI 人像抠图） | `remove-background.md` | 桌面端 RemoveBgPanel（背景处理页）；MCP `remove_background`；CLI `--remove-bg`、`--bg-fill`、`--photo-size`、`--bg-method` | active |
 | 智能裁剪 / 拆分图标 | `smart-crop.md` | 桌面端 SmartCropPanel；MCP `detect_icons`、`split_icons` | 待补 |
-| AI 图片生成 | `image-generation.md` | 桌面端 GeneratePanel（图片生成 → AI 绘图）；MCP `generate_image`、`get_generation` | 待补 |
+| AI 图片生成 | `image-generation.md` | 桌面端 GeneratePanel（图片生成 → AI 绘图）；MCP `generate_image`、`get_generation` | active |
+| 设计解析（设计稿 → 结构化描述、图标素材） | `design-spec.md` | 桌面端设计解析页；MCP `analyze_design`、`annotate_design`、`generate_design_icons`、`generate_image.analyze_design`；预设 `[spec]` | active |
 | SVG 图标生成与渲染 | `svg-icons.md` | 桌面端 SvgIconPanel（图片生成 → SVG 图标）；MCP `generate_svg_icons`、`render_svg` | active |
 | SVG 输入 | `svg-input.md` | 桌面端各处理页添加 .svg；MCP 压缩 / 转换 / 裁剪 / 去背景 / `image_info` / `view_image` / `import_image` | active |
-| MCP 项目上下文与图片导入 | `mcp-project-context.md` | 桌面端 McpModal；MCP `get_project_context`、`init_project_preset`、`import_image`、`image_info`、`view_image` | 待补 |
+| MCP 项目上下文与图片导入 | `mcp-project-context.md` | 桌面端 McpModal；MCP `get_project_context`、`init_project_preset`、`import_image`、`image_info`、`view_image` | active |

@@ -22,7 +22,9 @@ import {
   defaultSettings,
   detectKey,
   loadRemoveBg,
+  frameKeyOf,
   loadSmartCrop,
+  photoSizeOf,
   rgbToHex,
   saveRemoveBg,
   saveSmartCrop,
@@ -36,7 +38,7 @@ import { RemoveBgPanel } from './panels/RemoveBgPanel';
 import type { ExportProgress, FoundPreset, ImageItem, Rect, Region, Settings, Tool } from './types';
 import { CompareView } from './components/CompareView';
 import { CropEditor } from './components/CropEditor';
-import { FitBox } from './components/FitBox';
+import { FitBox, clampZoom } from './components/FitBox';
 import { Thumbnails } from './components/Thumbnails';
 import { BatchTable } from './components/BatchTable';
 import { McpModal } from './components/McpModal';
@@ -51,13 +53,19 @@ import { SvgIconPanel } from './panels/SvgIconPanel';
 import { useSvgIcons } from './generate/svgIcons';
 import { useApiSettings, useGenerator } from './generate/useGenerator';
 import { SettingsModal } from './components/SettingsModal';
+import { DesignPanel } from './panels/DesignPanel';
+import { DesignSpecOverlay } from './components/DesignSpecOverlay';
+import { ZoomBar } from './components/ZoomBar';
+import { loadDesignSettings, saveDesignSettings, useDesign } from './design/useDesign';
+import { addNode, findNode, removeNode, updateNode } from './design/tree';
 
 const TOOLS: { label: string; value: Tool }[] = [
   { label: '图片压缩', value: 'compress' },
   { label: '裁剪尺寸', value: 'crop' },
   { label: '格式转换', value: 'convert' },
-  { label: '去除背景', value: 'removebg' },
+  { label: '背景处理', value: 'removebg' },
   { label: '图片生成', value: 'generate' },
+  { label: '设计解析', value: 'design' },
 ];
 
 const previewKey = (path: string, options: unknown) => `${path}|${JSON.stringify(options)}`;
@@ -88,6 +96,15 @@ export default function App() {
   useEffect(() => localStorage.setItem('imgtool.genMode', genMode), [genMode]);
   const apiSettings = useApiSettings();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** 设计解析 */
+  const design = useDesign();
+  const [designSettings, setDesignSettings] = useState(loadDesignSettings);
+  useEffect(() => saveDesignSettings(designSettings), [designSettings]);
+  const [designSel, setDesignSel] = useState<string | null>(null);
+  /** 设计解析页的缩放（相对适应窗口的倍数）与适应窗口时的显示比例 */
+  const [designZoom, setDesignZoom] = useState(1);
+  const [designFit, setDesignFit] = useState(1);
+  const [designPan, setDesignPan] = useState(false);
   const previewSeq = useRef(0);
   const itemsRef = useRef(items);
   itemsRef.current = items;
@@ -188,6 +205,14 @@ export default function App() {
     setItems((prev) => prev.map((it) => ({ ...it, crop: defaultCropRect(it, aspectRatio(settings.crop.aspect, it)) })));
   };
 
+  // ---------- 证件照构图 ----------
+  const photoSize = tool === 'removebg' && settings.removeBg.mode === 'replace' ? photoSizeOf(settings.removeBg) : null;
+  /** 在左侧拖框微调构图 */
+  const [framing, setFraming] = useState(false);
+  useEffect(() => {
+    if (!photoSize) setFraming(false);
+  }, [photoSize?.width, photoSize?.height]);
+
   // ---------- 智能裁剪 ----------
   const smart = tool === 'crop' && settings.crop.mode === 'smart';
   const smartKey = detectKey(settings.smartCrop);
@@ -238,9 +263,64 @@ export default function App() {
     updateItem(item.path, { regions, regionNames: names ?? item.regionNames, regionsEdited: true });
   };
 
+  // ---------- 设计解析 ----------
+  const designState = item ? design.states[item.path] : undefined;
+  useEffect(() => {
+    if (tool === 'design' && item) design.load(item.path);
+  }, [tool, item?.path, design.load]);
+  useEffect(() => {
+    setDesignSel(null);
+    setDesignZoom(1);
+  }, [item?.path]);
+  // ⌘ + / ⌘ - / ⌘ 0 缩放（只在设计解析页、焦点不在输入框时）
+  useEffect(() => {
+    if (tool !== 'design') return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+      if (e.key === '=' || e.key === '+') setDesignZoom((z) => clampZoom(z * 1.25));
+      else if (e.key === '-') setDesignZoom((z) => clampZoom(z / 1.25));
+      else if (e.key === '0') setDesignZoom(1);
+      else return;
+      e.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [tool]);
+
+  const runDesign = async (f: () => Promise<unknown>, ok?: string) => {
+    try {
+      await f();
+      if (ok) message.success(ok);
+    } catch (e) {
+      message.error(String(e));
+    }
+  };
+  const analyzeDesign = () => {
+    if (!item) return;
+    const go = () => runDesign(() => design.analyze(item.path, designSettings), '解析完成');
+    if (designState?.dirty) {
+      modal.confirm({ title: '重新解析？', content: '有未保存的修改，重新解析会丢弃这些修改（已保存的标注会保留）。', okText: '重新解析', cancelText: '取消', onOk: go });
+    } else go();
+  };
+  const editDesignNode = (id: string, patch: Partial<import('./design/types').SpecNode>) => {
+    if (!item) return;
+    design.edit(item.path, (spec) => ({ ...spec, root: updateNode(spec.root, id, (n) => ({ ...n, ...patch, source: 'manual' })) }));
+  };
+  const generateDesignIcons = async (ids: string[] | null) => {
+    if (!item) return;
+    const a = apiSettings.value;
+    await runDesign(async () => {
+      const r = await design.generateIcons(item.path, { base_url: a.base_url, api_key: a.api_key, model: designSettings.iconModel, style: designSettings.iconStyle, ids });
+      if (r?.warnings.length) message.warning(r.warnings.join('；'));
+      else message.success(`已重绘 ${r?.icons.length ?? 0} 个图标`);
+    });
+  };
+
   // ---------- 预览 ----------
   const currentOptions = useMemo(
-    () => (item && tool !== 'generate' && !smart ? buildOptions(tool, settings, item) : null),
+    () => (item && tool !== 'generate' && tool !== 'design' && !smart ? buildOptions(tool, settings, item) : null),
     [item, tool, settings, smart],
   );
   const currentKey = item && currentOptions ? previewKey(item.path, currentOptions) : null;
@@ -264,7 +344,7 @@ export default function App() {
   }, [currentKey]);
 
   const estimateAll = async () => {
-    if (tool === 'generate') return;
+    if (tool === 'generate' || tool === 'design') return;
     setEstimating(true);
     const queue = [...itemsRef.current];
     const worker = async () => {
@@ -362,10 +442,63 @@ export default function App() {
     }
     const W = item.info.width ?? 1;
     const H = item.info.height ?? 1;
+    // 证件照构图框：手动调整过的优先，其次是最近一次预览的自动构图结果
+    const frameRatio = photoSize ? photoSize.width / photoSize.height : null;
+    const frameRect =
+      framing && photoSize
+        ? item.frame && item.frameKey === frameKeyOf(photoSize)
+          ? item.frame
+          : (item.preview?.report.auto_crop ?? defaultCropRect(item, frameRatio))
+        : null;
     return (
-      <FitBox width={W} height={H}>
+      <FitBox
+        width={W}
+        height={H}
+        zoom={tool === 'design' ? designZoom : undefined}
+        onZoomChange={tool === 'design' ? setDesignZoom : undefined}
+        onFitChange={setDesignFit}
+        panMode={tool === 'design' && designPan}
+      >
         {(size) =>
-          smart ? (
+          frameRect && photoSize ? (
+            <CropEditor
+              src={fileSrc(item.display_path)}
+              alt={item.name}
+              imageWidth={W}
+              imageHeight={H}
+              boxWidth={size.width}
+              rect={frameRect}
+              ratio={frameRatio}
+              onChange={(frame: Rect) => updateItem(item.path, { frame, frameKey: frameKeyOf(photoSize) })}
+            />
+          ) : tool === 'design' && designState?.spec ? (
+            <DesignSpecOverlay
+              src={fileSrc(item.display_path)}
+              alt={item.name}
+              imageWidth={W}
+              imageHeight={H}
+              boxWidth={size.width}
+              spec={designState.spec}
+              selected={designSel}
+              onSelect={setDesignSel}
+              depth={designSettings.depth}
+              showGroups={designSettings.showGroups}
+              onMove={(id, bounds) => design.edit(item.path, (spec) => ({ ...spec, root: updateNode(spec.root, id, (n) => ({ ...n, bounds, source: 'manual' })) }))}
+              onCommit={(id, bounds) => design.reanalyze(item.path, id, bounds)}
+              onDraw={(bounds) => {
+                const r = addNode(designState.spec!.root, bounds);
+                design.edit(item.path, (spec) => ({ ...spec, root: r.root }));
+                setDesignSel(r.id);
+                design.reanalyze(item.path, r.id, bounds);
+              }}
+              onDelete={(id) => {
+                const spec = designState.spec!;
+                if (id === spec.root.id || !findNode(spec.root, id)) return;
+                design.edit(item.path, (s) => ({ ...s, root: removeNode(s.root, id) }));
+                setDesignSel(null);
+              }}
+            />
+          ) : smart ? (
             <MultiCropEditor
               src={fileSrc(item.display_path)}
               alt={item.name}
@@ -448,6 +581,16 @@ export default function App() {
               results={generator.results}
               onRemove={generator.remove}
               onClear={generator.clear}
+              onDesign={async (path) => {
+                await addPaths([path]);
+                setTool('design');
+                setView('preview');
+                // 等列表更新后再定位到这张图
+                window.setTimeout(() => {
+                  const idx = itemsRef.current.findIndex((i) => i.path === path);
+                  if (idx >= 0) setCurrent(idx);
+                }, 50);
+              }}
               onUse={async (paths) => {
                 await addPaths(paths);
                 setTool('compress');
@@ -483,6 +626,7 @@ export default function App() {
           ) : (
             <>
               <div className="stage">{stage()}</div>
+              {item && tool === 'design' && <ZoomBar zoom={designZoom} fit={designFit} onChange={setDesignZoom} panMode={designPan} onPanModeChange={setDesignPan} />}
               {item && smart && (
                 <div className="stats" aria-live="polite">
                   {item.regionsError ? (
@@ -509,7 +653,32 @@ export default function App() {
                   {detecting && <Spin size="small" />}
                 </div>
               )}
-              {item && !smart && (
+              {item && tool === 'design' && (
+                <div className="stats" aria-live="polite">
+                  {designState?.error ? (
+                    <span className="stats-error">
+                      <WarningOutlined /> {designState.error}
+                    </span>
+                  ) : designState?.spec ? (
+                    <>
+                      <strong>{designState.spec.kind === 'component' ? '单个样式' : '整页设计稿'}</strong>
+                      <span className="muted">
+                        {designState.spec.source.width}×{designState.spec.source.height} · {designState.spec.annotated ? '已标注语义' : '未标注语义'}
+                        {designState.dirty ? ' · 有未保存的修改' : ''}
+                      </span>
+                      {designState.spec.palette.slice(0, 6).map((c) => (
+                        <span key={c.color} className="swatch" title={`${c.color} ${Math.round(c.ratio * 100)}%`} style={{ background: c.color }} />
+                      ))}
+                    </>
+                  ) : designState?.busy === 'analyze' ? (
+                    <span className="muted">解析中…</span>
+                  ) : (
+                    <span className="muted">还没有解析，点右侧「解析设计稿」</span>
+                  )}
+                  {designState?.busy && <Spin size="small" />}
+                </div>
+              )}
+              {item && !smart && tool !== 'design' && (
                 <div className="stats" aria-live="polite">
                   {item.previewError ? (
                     <span className="stats-error">
@@ -620,7 +789,17 @@ export default function App() {
               />
             )}
             {tool === 'convert' && <ConvertPanel value={settings.convert} onChange={(convert) => setSettings((s) => ({ ...s, convert }))} />}
-            {tool === 'removebg' && <RemoveBgPanel value={settings.removeBg} current={item} onChange={(removeBg) => setSettings((s) => ({ ...s, removeBg }))} />}
+            {tool === 'removebg' && (
+              <RemoveBgPanel
+                value={settings.removeBg}
+                current={item}
+                onChange={(removeBg) => setSettings((s) => ({ ...s, removeBg }))}
+                framing={framing}
+                onToggleFraming={() => setFraming((f) => !f)}
+                onResetFrame={() => item && updateItem(item.path, { frame: undefined, frameKey: undefined })}
+                onModelReady={() => setItems((prev) => prev.map((it) => ({ ...it, previewKey: undefined })))}
+              />
+            )}
             {tool === 'generate' && (
               <Segmented
                 block
@@ -656,14 +835,35 @@ export default function App() {
                 running={generator.running}
                 onGenerate={generator.generate}
                 removal={toRemoval(settings.removeBg)}
-                onEditRemoval={() => setTool('removebg')}
+                onEditRemoval={() => {
+                  setTool('removebg');
+                  setSettings((s) => ({ ...s, removeBg: { ...s.removeBg, mode: 'transparent' } }));
+                }}
                 api={apiSettings.value}
                 onOpenSettings={() => setSettingsOpen(true)}
               />
             )}
-            {tool !== 'generate' && <OutputSection value={settings.output} smart={smart} onChange={(output) => setSettings((s) => ({ ...s, output }))} />}
+            {tool === 'design' && (
+              <DesignPanel
+                value={designSettings}
+                onChange={setDesignSettings}
+                hasImage={!!item}
+                state={designState}
+                selected={designSel}
+                onSelect={setDesignSel}
+                onAnalyze={analyzeDesign}
+                onEditNode={editDesignNode}
+                onNormalize={() => item && runDesign(() => design.normalize(item.path))}
+                onSave={() => item && runDesign(() => design.save(item.path), '已保存，图标素材已按名称更新')}
+                onGenerateIcons={generateDesignIcons}
+                apiReady={!!apiSettings.value.api_key}
+                onOpenSettings={() => setSettingsOpen(true)}
+                onOpenFolder={(dir) => api.openFolder(dir).catch((e) => message.error(String(e)))}
+              />
+            )}
+            {tool !== 'generate' && tool !== 'design' && <OutputSection value={settings.output} smart={smart} onChange={(output) => setSettings((s) => ({ ...s, output }))} />}
           </div>
-          {tool !== 'generate' && (
+          {tool !== 'generate' && tool !== 'design' && (
             <Button type="primary" size="large" block icon={<ExportOutlined />} loading={exporting} disabled={!selectedCount} onClick={exportSelected}>
               {smart
                 ? selectedCount > 1

@@ -20,9 +20,11 @@ use crate::gen_tasks::{is_remote, GenJob, Status, TaskStore};
 use crate::options::{parse_aspect, resolve, Overrides};
 use crate::workspace::{file_uri_to_path, validate_relative_dir, Workspace};
 
+mod design_tools;
 mod svg_tools;
 
-const INSTRUCTIONS: &str = "imgtool：在当前项目内处理和生成图片（压缩、调整分辨率、裁剪、格式转换、去背景、拆分图标、AI 生成）。\n\
+const INSTRUCTIONS: &str = "imgtool：在当前项目内处理和生成图片（压缩、调整分辨率、裁剪、格式转换、去背景、拆分图标、AI 生成、设计稿解析）。\n\
+- 要按设计稿或某个好看的样式写代码：先用 analyze_design 拿到结构化描述（节点树、像素坐标、样式、自动布局）和编号标注图，看图后用 annotate_design 按编号补上语义和文字；设计稿里的图标会自动裁成素材，需要高清版时用 generate_design_icons。用 generate_image 生成 UI 稿时可传 analyze_design=true 直接出 spec。\n\
 - 路径可用相对项目根目录的路径；所有读写都限制在项目根目录内。\n\
 - 用户在对话里发来的图片：先用 import_image 存进项目（支持图片地址、base64、本机文件路径），再用返回的路径调用其他工具。\n\
 - 生成或重新生成设计稿：generate_image 提交任务（立即返回 task_id），再用 get_generation 查询，它会等待最多 wait_seconds 秒，完成后返回文件路径和预览图。参考图可传项目内路径。提示词请你根据用户的规则自己写清楚。\n\
@@ -65,7 +67,7 @@ impl ImgToolServer {
             explicit_roots: Arc::new(explicit_roots),
             cache: Arc::new(RwLock::new(None)),
             tasks: TaskStore::default(),
-            tool_router: Self::tool_router() + Self::svg_tool_router(),
+            tool_router: Self::tool_router() + Self::svg_tool_router() + Self::design_tool_router(),
         }
     }
 
@@ -260,7 +262,25 @@ pub struct RemoveBgParams {
     /// 裁剪时保留的边距（像素）
     #[serde(default)]
     pub trim_padding: Option<u32>,
-    /// 输出格式 png（默认）/ webp / avif；jpeg 不支持透明
+    /// 更换底色：white / blue / red（证件照白、蓝、红底）或 "#rrggbb"。设置后把主体合成到这个纯色上，输出不透明图片；不传则输出透明背景
+    #[serde(default)]
+    pub fill_color: Option<String>,
+    /// 证件照尺寸：1inch(一寸 295x413) / 2inch(二寸 413x579) / small-1inch(小一寸 260x378) / small-2inch(小二寸 413x531)，或 "宽x高"。
+    /// 按去背景后的主体自动构图（头部水平居中、头顶留白 10%）再缩放到精确像素；通常与 fill_color 一起用
+    #[serde(default)]
+    pub photo_size: Option<String>,
+    /// 文件大小上限（KB），如报名照常见的 50。自动降低质量满足，不会缩小分辨率；达不到时结果里有警告
+    #[serde(default)]
+    pub max_kb: Option<u64>,
+    /// 抠图方式：color 按颜色（默认，适合纯色背景）/ ai 用本地 MODNet 人像抠图模型（只适合人物照片；背景不必是纯色，发丝更自然，
+    /// 白衬衫等与背景同色的衣物不会被误删）。首次使用 ai 会自动下载约 25MB 模型；ai 时忽略 tolerance、softness、contiguous、portrait
+    #[serde(default)]
+    pub method: Option<imgcore::RemovalMethod>,
+    /// 人像模式：只去除能从左/右/上边缘直接看到的背景，保护被主体包住的同色区域（如西装里的白衬衫）。
+    /// 设置 fill_color 或 photo_size 时默认 true，否则默认 false
+    #[serde(default)]
+    pub portrait: Option<bool>,
+    /// 输出格式：透明背景时 png（默认）/ webp / avif（jpeg 不支持透明）；设置 fill_color 时默认 jpeg，也可用 png 等
     #[serde(default)]
     pub format: Option<OutputFormat>,
     #[serde(default)]
@@ -401,6 +421,10 @@ pub struct GenerateImageParams {
     /// 文件名前缀，默认 gen
     #[serde(default)]
     pub name: Option<String>,
+    /// 生成后自动解析成设计稿 spec（同 analyze_design：结构化节点树 + 编号标注图 + 图标素材），默认 false。
+    /// 生成 UI 设计稿时建议开启，get_generation 会返回 spec 路径
+    #[serde(default)]
+    pub analyze_design: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -612,11 +636,10 @@ impl ImgToolServer {
             max_height: p.max_height,
             fit: p.fit,
             format: p.format,
-            crop: None,
-            remove_background: None,
             output_mode: p.output_mode,
             out_dir: p.out_dir,
             on_conflict: p.on_conflict,
+            ..Default::default()
         };
         self.process_paths(&peer, p.paths, overrides, p.dry_run.unwrap_or(false), None).await
     }
@@ -668,12 +691,23 @@ impl ImgToolServer {
     }
 
     #[tool(
-        description = "去除纯色/近纯色背景，输出透明 PNG（适合白底产品图、图标、AI 生成的纯色背景图）。自动识别边缘背景色，或用 color 指定。复杂背景效果有限，结果里会给出警告。默认写到同目录 name.min.png。",
+        description = "背景处理：去除背景输出透明 PNG（适合白底产品图、图标、AI 生成的纯色背景图）；人物照片用 method=ai（本地 MODNet 人像抠图，背景不必是纯色，首次自动下载约 25MB 模型）；或用 fill_color 更换底色（如证件照换蓝底/红底/白底），配合 photo_size 按主体自动构图输出一寸/二寸等精确尺寸，max_kb 限制文件大小。自动识别边缘背景色，或用 color 指定原背景色。默认 method=color 按颜色抠图，原图背景需接近纯色，复杂背景或发丝边缘效果有限，结果里会给出警告。默认写到原图同目录（透明背景默认 PNG，换底色默认 JPG）。",
         annotations(destructive_hint = false, idempotent_hint = true)
     )]
     async fn remove_background(&self, peer: Peer<RoleServer>, Parameters(p): Parameters<RemoveBgParams>) -> Result<CallToolResult, McpError> {
-        if p.format == Some(OutputFormat::Jpeg) {
-            return tool_error("JPEG 不支持透明，请使用 png / webp / avif");
+        let fill = match p.fill_color.as_deref().map(crate::options::parse_fill).transpose() {
+            Ok(c) => c,
+            Err(e) => return tool_error(e),
+        };
+        if fill.is_none() && p.format == Some(OutputFormat::Jpeg) {
+            return tool_error("JPEG 不支持透明，请使用 png / webp / avif；或用 fill_color 更换底色后再输出 jpeg");
+        }
+        let photo_size = match p.photo_size.as_deref().map(imgcore::portrait::parse_photo_size).transpose() {
+            Ok(s) => s,
+            Err(e) => return tool_error(e),
+        };
+        if p.max_kb == Some(0) {
+            return tool_error("max_kb 必须大于 0");
         }
         let color = match p.color.as_deref().map(crate::options::parse_color).transpose() {
             Ok(c) => c,
@@ -682,19 +716,36 @@ impl ImgToolServer {
         let mut removal = imgcore::BackgroundRemoval {
             color,
             contiguous: p.contiguous.unwrap_or(true),
-            trim: p.trim.unwrap_or(false),
+            // 证件照按主体构图，不需要先裁掉空白
+            trim: p.trim.unwrap_or(false) && photo_size.is_none(),
             trim_padding: p.trim_padding.unwrap_or(0),
+            fill,
+            // 换底色 / 证件照通常是人像，默认保护被主体包住的同色衣物
+            portrait: p.portrait.unwrap_or(fill.is_some() || photo_size.is_some()),
+            method: p.method.unwrap_or_default(),
             ..Default::default()
         };
+        if removal.method == imgcore::RemovalMethod::Ai {
+            if let Err(e) = crate::matting::ensure_model().await {
+                return tool_error(e);
+            }
+        }
         if let Some(t) = p.tolerance {
             removal.tolerance = t.min(100);
         }
         if let Some(s) = p.softness {
             removal.softness = s.min(100);
         }
+        let format = p.format.unwrap_or(if fill.is_some() { OutputFormat::Jpeg } else { OutputFormat::Png });
         let overrides = Overrides {
-            lossless: true,
-            format: Some(p.format.unwrap_or(OutputFormat::Png)),
+            // 透明图无损保留平滑边缘；JPEG 用高质量；限制体积时按目标体积搜索质量
+            lossless: p.max_kb.is_none() && format != OutputFormat::Jpeg,
+            quality: (p.max_kb.is_none() && format == OutputFormat::Jpeg).then_some(92),
+            max_kb: p.max_kb,
+            keep_dimensions: true,
+            format: Some(format),
+            crop: photo_size.map(|(width, height)| imgcore::CropSpec::Subject { width, height }),
+            resize: photo_size.map(|(w, h)| crate::options::id_photo_resize(w, h)),
             remove_background: Some(removal),
             output_mode: p.output_mode,
             out_dir: p.out_dir,
@@ -941,7 +992,14 @@ impl ImgToolServer {
             final_size,
             out_dir: out_dir.clone(),
             name: imgcore::project::sanitize_name(p.name.as_deref().unwrap_or("gen")),
+            post: None,
         };
+        let mut job = job;
+        if p.analyze_design.unwrap_or(false) {
+            let root = ws.root_of(&out_dir).unwrap_or(ws.primary()).to_path_buf();
+            let spec = load_preset(&ws, &out_dir).map(|(_, p)| p.spec).unwrap_or_default();
+            job.post = Some(crate::gen_tasks::PostProcess::AnalyzeDesign { root, icons_dir: spec.icons_dir, icon_size: spec.icon_size });
+        }
         let task_id = self.tasks.submit(cfg, job);
         ok_json(
             format!(
@@ -968,15 +1026,41 @@ impl ImgToolServer {
         for f in &mut state.files {
             f.path = ws.relative(Path::new(&f.path));
         }
-        let summary = match state.status {
+        let mut summary = match state.status {
             Status::Running => format!("任务 {} 仍在进行：{}，已用 {} 秒。请再次调用 get_generation", state.task_id, state.stage, state.elapsed_secs),
             Status::Completed => format!("任务完成，用时 {} 秒，生成 {} 张：{}", state.elapsed_secs, state.files.len(), state.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>().join("、")),
             Status::Partial => format!("部分完成：成功 {} 张，失败 {} 张：{}", state.files.len(), state.errors.len(), state.errors.join("；")),
             Status::Failed => format!("任务失败：{}", state.errors.join("；")),
         };
+        // 设计稿处理结果
+        for f in &state.files {
+            if let Some(d) = &f.design {
+                match (&d.overlay_path, &d.spec_path) {
+                    (Some(ov), Some(sp)) => summary.push_str(&format!(
+                        "。{} 已解析为设计稿 {sp}（{} 个节点、{} 个图标素材），附图是编号标注图 {ov}：请看图后调用 annotate_design 按编号补充语义",
+                        f.path,
+                        d.nodes.unwrap_or(0),
+                        d.icons.len()
+                    )),
+                    (None, Some(sp)) => {
+                        summary.push_str(&format!("。已拆出 {} 个高清图标并写回 {sp}：{}", d.icons.len(), d.icons.iter().map(|i| i.path.as_str()).collect::<Vec<_>>().join("、")));
+                        if !d.warnings.is_empty() {
+                            summary.push_str(&format!("（{}）", d.warnings.join("；")));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         let mut blocks = vec![ContentBlock::text(summary), ContentBlock::json(&state)?];
         if p.preview.unwrap_or(true) && state.status != Status::Running {
-            let paths: Vec<PathBuf> = state.files.iter().take(4).filter_map(|f| ws.resolve_existing(&f.path).ok()).collect();
+            // 解析过的设计稿直接给编号标注图，Agent 才能按编号标注
+            let paths: Vec<PathBuf> = state
+                .files
+                .iter()
+                .take(4)
+                .filter_map(|f| ws.resolve_existing(f.design.as_ref().and_then(|d| d.overlay_path.as_deref()).unwrap_or(&f.path)).ok())
+                .collect();
             let previews = blocking(move || paths.iter().filter_map(|p| preview_block(p, 384).ok()).collect::<Vec<_>>()).await?;
             blocks.extend(previews);
         }

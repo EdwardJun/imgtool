@@ -109,6 +109,9 @@ pub struct GenerateParams {
     /// 生成后在本地调整到的最终尺寸（接口只支持固定几档尺寸）
     #[serde(default)]
     pub final_size: Option<FinalSize>,
+    /// 生成后解析成设计稿 spec
+    #[serde(default)]
+    pub analyze_design: bool,
 }
 
 pub use imgcore::postprocess::FinalSize;
@@ -124,6 +127,8 @@ pub struct GeneratedFile {
     pub source_url: Option<String>,
     pub revised_prompt: Option<String>,
     pub warnings: Vec<String>,
+    /// 生成后解析出的设计稿 spec 路径
+    pub spec_path: Option<String>,
 }
 
 fn generated_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -180,13 +185,21 @@ pub async fn generate_image(
     let revised_prompt = img.revised_prompt.clone();
     let removal = params.remove_background.clone();
     let final_size = params.final_size;
+    let analyze = params.analyze_design;
     tauri::async_runtime::spawn_blocking(move || {
         let c = convert_output(img.data, format, removal, final_size)?;
         let ext = if c.ext == "jpeg" { "jpg".to_string() } else { c.ext };
         let name = format!("gen-{}-{}.{ext}", sanitize(&task_id), GEN_SEQ.fetch_add(1, Ordering::Relaxed));
         let path = dir.join(name);
         std::fs::write(&path, &c.data).map_err(|e| e.to_string())?;
+        let mut warnings = c.warnings;
+        let spec_path = if analyze {
+            crate::design_spec::analyze_generated(&path).map_err(|e| warnings.push(format!("设计稿解析失败：{e}"))).ok()
+        } else {
+            None
+        };
         Ok(GeneratedFile {
+            spec_path,
             task_id,
             path: path.display().to_string(),
             format: ext,
@@ -195,7 +208,7 @@ pub async fn generate_image(
             bytes: c.data.len() as u64,
             source_url,
             revised_prompt,
-            warnings: c.warnings,
+            warnings,
         })
     })
     .await

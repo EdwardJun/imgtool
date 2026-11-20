@@ -41,6 +41,9 @@ pub struct OutputFile {
     pub revised_prompt: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// 设计稿解析 / 图标拆分的结果
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub design: Option<DesignOutput>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,6 +78,51 @@ pub struct GenJob {
     pub out_dir: PathBuf,
     /// 文件名前缀
     pub name: String,
+    /// 保存后的设计稿解析
+    pub post: Option<PostProcess>,
+}
+
+/// 生成结果保存后的设计稿处理
+#[derive(Debug, Clone)]
+pub enum PostProcess {
+    /// 每张结果解析成设计稿 spec（generate_image 的 analyze_design=true）
+    AnalyzeDesign { root: PathBuf, icons_dir: Option<String>, icon_size: u32 },
+    /// 生成的是图标网格图：拆成单个图标写回 spec（generate_design_icons）
+    DesignIcons { root: PathBuf, spec_file: PathBuf, plan: imgspec::IconSheetPlan, icons_dir: Option<String>, icon_size: u32 },
+}
+
+/// 设计稿处理结果（路径相对项目根目录）
+#[derive(Debug, Clone, Serialize)]
+pub struct DesignOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spec_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nodes: Option<usize>,
+    pub icons: Vec<imgspec::IconFile>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+fn run_post(post: &PostProcess, image: &Path, data: &[u8]) -> Result<DesignOutput, String> {
+    match post {
+        PostProcess::AnalyzeDesign { root, icons_dir, icon_size } => {
+            let paths = imgspec::spec_paths(root, image, icons_dir.as_deref());
+            let opts = imgspec::RunOptions { icons: imgspec::IconOptions { size: *icon_size, ..Default::default() }, ..Default::default() };
+            let r = imgspec::analyze_file(&paths, &opts).map_err(|e| e.to_string())?;
+            Ok(DesignOutput { spec_path: Some(r.spec_path), overlay_path: Some(r.overlay_path), nodes: Some(r.spec.root.count()), icons: r.icons, warnings: vec![] })
+        }
+        PostProcess::DesignIcons { root, spec_file, plan, icons_dir, icon_size } => {
+            let mut spec = imgspec::store::load(spec_file).map_err(|e| e.to_string())?;
+            let paths = imgspec::store::paths_for_spec(root, spec_file, &spec, icons_dir.as_deref());
+            let sheet = imgcore::decode::decode(data).map_err(|e| e.to_string())?.image;
+            let opts = imgspec::IconOptions { size: *icon_size, ..Default::default() };
+            let (icons, warnings) = imgspec::icons::apply_icon_sheet(&sheet, &mut spec, plan, &paths, &opts).map_err(|e| e.to_string())?;
+            imgspec::store::save(&spec, spec_file).map_err(|e| e.to_string())?;
+            Ok(DesignOutput { spec_path: Some(imgspec::store::rel(root, spec_file)), overlay_path: None, nodes: None, icons, warnings })
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -253,6 +301,15 @@ fn save_output(job: &GenJob, index: usize, task: &str, data: Vec<u8>, revised_pr
     let target = job.out_dir.join(file_name);
     let target = resolve_conflict(target, Path::new(""), &OutputPolicy::default(), ConflictPolicy::Rename).map_err(|e| e.to_string())?;
     write_atomic(&target, &out.data).map_err(|e| e.to_string())?;
+    let mut warnings = out.warnings;
+    // 解析失败不影响生成结果，只记为警告
+    let design = job.post.as_ref().and_then(|p| match run_post(p, &target, &out.data) {
+        Ok(d) => Some(d),
+        Err(e) => {
+            warnings.push(format!("设计稿处理失败：{e}"));
+            None
+        }
+    });
     Ok(OutputFile {
         path: target.display().to_string(),
         width: out.width,
@@ -260,6 +317,7 @@ fn save_output(job: &GenJob, index: usize, task: &str, data: Vec<u8>, revised_pr
         format: out.ext,
         bytes: out.data.len() as u64,
         revised_prompt,
-        warnings: out.warnings,
+        warnings,
+        design,
     })
 }

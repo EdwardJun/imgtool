@@ -13,6 +13,10 @@ pub struct Overrides {
     pub fit: Option<ResizeFit>,
     pub format: Option<OutputFormat>,
     pub crop: Option<CropSpec>,
+    /// 完整缩放参数（如证件照精确尺寸），优先于 max_width / max_height
+    pub resize: Option<ResizeSpec>,
+    /// 目标体积模式下不缩小分辨率
+    pub keep_dimensions: bool,
     pub remove_background: Option<imgcore::BackgroundRemoval>,
     pub output_mode: Option<OutputMode>,
     pub out_dir: Option<String>,
@@ -35,7 +39,7 @@ pub fn resolve(preset: &ProjectPreset, o: &Overrides) -> Result<Resolved, String
         if kb == 0 {
             return Err("max_kb 必须大于 0".into());
         }
-        options.mode = CompressMode::TargetSize { max_bytes: kb * 1024, min_quality: None };
+        options.mode = CompressMode::TargetSize { max_bytes: kb * 1024, min_quality: None, keep_dimensions: o.keep_dimensions };
     } else if let Some(q) = o.quality {
         if !(1..=100).contains(&q) {
             return Err("quality 必须在 1-100".into());
@@ -43,7 +47,9 @@ pub fn resolve(preset: &ProjectPreset, o: &Overrides) -> Result<Resolved, String
         options.mode = CompressMode::Quality { quality: q };
     }
 
-    if o.max_width.is_some() || o.max_height.is_some() {
+    if let Some(r) = &o.resize {
+        options.resize = Some(r.clone());
+    } else if o.max_width.is_some() || o.max_height.is_some() {
         options.resize = Some(ResizeSpec {
             width: o.max_width,
             height: o.max_height,
@@ -104,6 +110,18 @@ pub fn parse_color(s: &str) -> Result<[u8; 3], String> {
     }
 }
 
+/// 解析底色：white / blue / red（证件照白、蓝、红底）或任意颜色
+pub fn parse_fill(s: &str) -> Result<[u8; 3], String> {
+    imgcore::portrait::named_fill(s)
+        .map(Ok)
+        .unwrap_or_else(|| parse_color(s).map_err(|_| format!("无效底色 {s}，可用 white / blue / red，或 #rrggbb")))
+}
+
+/// 证件照的精确输出尺寸：先按主体构图裁到目标比例，再缩放（小图也放大）到精确像素
+pub fn id_photo_resize(width: u32, height: u32) -> ResizeSpec {
+    ResizeSpec { width: Some(width), height: Some(height), fit: ResizeFit::Cover, without_enlargement: false }
+}
+
 /// 解析 "x,y,w,h"
 pub fn parse_rect(s: &str) -> Result<CropSpec, String> {
     let parts: Vec<u32> = s
@@ -146,5 +164,17 @@ mod tests {
         assert_eq!(parse_color("#FFfe00").unwrap(), [255, 254, 0]);
         assert_eq!(parse_color("1, 2,3").unwrap(), [1, 2, 3]);
         assert!(parse_color("#fff").is_err());
+        assert_eq!(parse_fill("blue").unwrap(), [67, 142, 219]);
+        assert_eq!(parse_fill("#00ff00").unwrap(), [0, 255, 0]);
+        assert!(parse_fill("purple").is_err());
+    }
+
+    #[test]
+    fn id_photo_overrides_beat_preset_resize() {
+        let preset = ProjectPreset { defaults: PresetDefaults { max_width: Some(100), ..Default::default() }, ..Default::default() };
+        let o = Overrides { max_kb: Some(50), keep_dimensions: true, resize: Some(id_photo_resize(295, 413)), ..Default::default() };
+        let r = resolve(&preset, &o).unwrap();
+        assert_eq!(r.options.mode, CompressMode::TargetSize { max_bytes: 50 * 1024, min_quality: None, keep_dimensions: true });
+        assert_eq!(r.options.resize, Some(id_photo_resize(295, 413)));
     }
 }

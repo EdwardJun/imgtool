@@ -3,11 +3,11 @@ title: SVG 输入
 slug: svg-input
 status: active
 entry_points:
-  - "桌面端：图片压缩 / 裁剪尺寸 / 格式转换 / 去除背景（添加或拖入 .svg）"
+  - "桌面端：图片压缩 / 裁剪尺寸 / 格式转换 / 背景处理（添加或拖入 .svg）"
   - "MCP：compress_images、convert_images、crop_image、remove_background、image_info、view_image、import_image、scan_images"
   - "命令行：imgtool compress / convert"
 created: 2026-11-17
-last_updated: 2026-11-17
+last_updated: 2026-11-18
 ---
 
 # SVG 输入
@@ -63,3 +63,4 @@ last_updated: 2026-11-17
 | 日期 | 变更 |
 |---|---|
 | 2026-11-17 | 新增：SVG 可作为压缩、裁剪、转换、去背景的输入 |
+| 2026-11-18 | 桌面端"去除背景"页改名"背景处理"，入口描述同步 |
